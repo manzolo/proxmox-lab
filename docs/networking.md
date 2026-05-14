@@ -64,13 +64,15 @@ BRIDGE_ADDRESS=192.168.100.1/24  # assigned to host bridge by network-up
 
 `make autoinstall-scaffold` bakes a static IP into each node's answer file at ISO build time. `sudo make network-up` assigns `BRIDGE_ADDRESS` to the bridge so the host can reach all nodes. No external DHCP server required.
 
-Add node hostnames to `/etc/hosts` on the host so SSH and cluster bootstrap work:
+To reach nodes by hostname from the host, add entries to `/etc/hosts` (optional — you can always use IPs directly):
 
 ```
 192.168.100.101  pvelab1.lab.local  pvelab1
 192.168.100.102  pvelab2.lab.local  pvelab2
 192.168.100.103  pvelab3.lab.local  pvelab3
 ```
+
+If you skip this, use IPs everywhere: `ssh root@192.168.100.101`, `FIRST_NODE_FQDN=192.168.100.101 bash artifacts/bootstrap/bootstrap-cluster.sh`, etc.
 
 ### DHCP
 

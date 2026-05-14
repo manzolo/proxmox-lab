@@ -11,9 +11,8 @@ Before running the bootstrap script:
 - Nodes are booted and running (`make boot-headless`)
 - TAP/bridge networking is up (`sudo make network-up`)
 - Each node has an IP address on the bridge (verify via `make vm-serial`)
-- The host can resolve `pvelab1.lab.local`, `pvelab2.lab.local`, `pvelab3.lab.local`
-  (add them to `/etc/hosts` or configure your DNS)
-- SSH works from host to each node: `ssh root@pvelab1.lab.local`
+- SSH works from host to each node: `ssh root@192.168.100.101` (or by hostname
+  if you added entries to `/etc/hosts` — see [networking.md](networking.md))
 
 ## Generate the bootstrap script
 

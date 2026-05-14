@@ -166,6 +166,13 @@ Eseguire dal host (richiede SSH raggiungibile tra host e nodi, tipicamente via b
 bash artifacts/bootstrap/bootstrap-cluster.sh
 ```
 
+> **Nota**: Il bootstrap usa gli FQDN dei nodi (es. `pvelab1.lab.local`). Se non si
+> vogliono aggiungere voci a `/etc/hosts`, si possono passare gli IP direttamente:
+> ```bash
+> FIRST_NODE_FQDN=192.168.100.101 bash artifacts/bootstrap/bootstrap-cluster.sh
+> ```
+> Oppure aggiungere le voci a `/etc/hosts` (opzionale, vedi [networking.md](networking.md)).
+
 ## 9. Verifica cluster
 
 Collegarsi a pve01:
