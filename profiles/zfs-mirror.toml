@@ -5,9 +5,9 @@
 keyboard = "en-us"
 country = "it"
 fqdn = "{{FQDN}}"
-mailto = "root@localhost"
+mailto = "{{MAILTO}}"
 timezone = "Europe/Rome"
-root-password = "CHANGEME"
+root-password = "{{ROOT_PASSWORD}}"
 
 [network]
 source = "from-dhcp"

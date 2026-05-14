@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 CLI := ./bin/proxmox-lab
 CONFIG ?= ./config.env
 
-.PHONY: help init status tui iso-latest iso-configured create start start-headless stop vm-inspect vm-serial network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate lint
+.PHONY: help init status tui iso-latest iso-configured create start start-headless stop vm-inspect vm-serial network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate autoinstall-prepare cluster-scaffold lint
 
 help:
 	@printf '%s\n' \
@@ -23,8 +23,10 @@ help:
 		'  make network-down          tear TAP bridge down (root)' \
 		'  make clean                 remove disk artifacts' \
 		'  make clean-all             remove logs, pid files, disks' \
-		'  make autoinstall-scaffold  create artifacts/autoinstall/answer.toml' \
-		'  make autoinstall-validate  validate artifacts/autoinstall/answer.toml' \
+		'  make autoinstall-scaffold  create per-node answer files under artifacts/autoinstall/' \
+		'  make autoinstall-validate  validate all per-node answer files' \
+		'  make autoinstall-prepare   build per-node unattended ISOs from current base ISO' \
+		'  make cluster-scaffold      generate cluster+data-pool bootstrap scripts' \
 		'  make lint                  run shellcheck when available'
 
 init:
@@ -77,6 +79,12 @@ autoinstall-scaffold:
 
 autoinstall-validate:
 	$(CLI) --config $(CONFIG) autoinstall validate
+
+autoinstall-prepare:
+	$(CLI) --config $(CONFIG) autoinstall prepare-iso "$$($(CLI) --config $(CONFIG) iso configured-path)"
+
+cluster-scaffold:
+	$(CLI) --config $(CONFIG) cluster scaffold
 
 lint:
 	@if command -v shellcheck >/dev/null 2>&1; then \

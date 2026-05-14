@@ -14,6 +14,7 @@ DISKS_DIR="${ARTIFACTS_DIR}/disks"
 LOGS_DIR="${ARTIFACTS_DIR}/logs"
 RUN_DIR="${ARTIFACTS_DIR}/run"
 AUTO_DIR="${ARTIFACTS_DIR}/autoinstall"
+BOOTSTRAP_DIR="${ARTIFACTS_DIR}/bootstrap"
 TEMPLATE_DIR="${REPO_ROOT}/templates"
 PROFILE_DIR="${REPO_ROOT}/profiles"
 
@@ -40,7 +41,14 @@ QEMU_BIN="qemu-system-x86_64"
 QEMU_IMG_BIN="qemu-img"
 AUTO_HOSTNAME_PREFIX="pvelab"
 AUTO_DOMAIN="lab.local"
+AUTO_ROOT_PASSWORD="CHANGEME"
+AUTO_MAILTO="root@localhost"
 AUTOINSTALL_PROFILE="zfs-mirror"
+CLUSTER_NAME="pvelab"
+DATA_ZPOOL_NAME="vmdata"
+DATA_ZPOOL_DEVICES="sdc sdd"
+DATA_STORAGE_ID="vmdata"
+DATA_STORAGE_CONTENT="images,rootdir"
 
 declare -a CONFIG_OVERRIDES=()
 
@@ -65,6 +73,7 @@ Usage:
   proxmox-lab init
   proxmox-lab status
   proxmox-lab iso current
+  proxmox-lab iso configured-path
   proxmox-lab iso fetch [latest|VERSION|URL]
   proxmox-lab network up|down|status
   proxmox-lab vm create
@@ -74,9 +83,10 @@ Usage:
   proxmox-lab vm inspect [all|INDEX]
   proxmox-lab vm serial [INDEX]
   proxmox-lab clean disks|logs|run|all
-  proxmox-lab autoinstall scaffold
-  proxmox-lab autoinstall validate [ANSWER_FILE]
-  proxmox-lab autoinstall prepare-iso SOURCE_ISO [ANSWER_FILE]
+  proxmox-lab autoinstall scaffold [all|INDEX]
+  proxmox-lab autoinstall validate [all|INDEX|ANSWER_FILE]
+  proxmox-lab autoinstall prepare-iso SOURCE_ISO [all|INDEX|ANSWER_FILE]
+  proxmox-lab cluster scaffold
 
 Global options:
   --config PATH           Use a specific config file.
@@ -85,7 +95,7 @@ EOF
 }
 
 ensure_dirs() {
-    mkdir -p "${ARTIFACTS_DIR}" "${ISO_DIR}" "${DISKS_DIR}" "${LOGS_DIR}" "${RUN_DIR}" "${AUTO_DIR}"
+    mkdir -p "${ARTIFACTS_DIR}" "${ISO_DIR}" "${DISKS_DIR}" "${LOGS_DIR}" "${RUN_DIR}" "${AUTO_DIR}" "${BOOTSTRAP_DIR}"
 }
 
 load_config() {
@@ -173,6 +183,16 @@ vm_name() {
     printf '%s%d' "${VM_PREFIX}" "${index}"
 }
 
+node_hostname() {
+    local index="$1"
+    printf '%s%d' "${AUTO_HOSTNAME_PREFIX}" "${index}"
+}
+
+node_fqdn() {
+    local index="$1"
+    printf '%s.%s' "$(node_hostname "${index}")" "${AUTO_DOMAIN}"
+}
+
 vm_mac() {
     local index="$1"
     printf '52:54:00:ac:11:%02x' "${index}"
@@ -201,6 +221,31 @@ vm_monitor_path() {
 
 current_iso_path() {
     printf '%s/current.iso' "${ISO_DIR}"
+}
+
+configured_iso_path() {
+    printf '%s/proxmox-ve_%s.iso' "${ISO_DIR}" "${PROXMOX_ISO_VERSION}"
+}
+
+node_answer_path() {
+    local index="$1"
+    printf '%s/%s-answer.toml' "${AUTO_DIR}" "$(vm_name "${index}")"
+}
+
+node_iso_path() {
+    local index="$1"
+    printf '%s/%s-auto.iso' "${ISO_DIR}" "$(vm_name "${index}")"
+}
+
+resolve_vm_iso() {
+    local index="$1"
+    local node_iso
+    node_iso="$(node_iso_path "${index}")"
+    if [[ -f "${node_iso}" ]]; then
+        printf '%s' "${node_iso}"
+        return 0
+    fi
+    resolve_iso_path
 }
 
 resolve_iso_path() {
@@ -387,7 +432,7 @@ start_vm_mode() {
     local iso vm pid_file log_file serial_log monitor_path
     local layout suffix netdev_arg device_arg
     local -a qemu_args
-    iso="$(resolve_iso_path)" || die "no ISO available; run 'proxmox-lab iso fetch latest' first"
+    iso="$(resolve_vm_iso "${index}")" || die "no ISO available; run 'proxmox-lab iso fetch latest' first"
     vm="$(vm_name "${index}")"
     pid_file="$(vm_pid_path "${index}")"
     log_file="${LOGS_DIR}/${vm}.log"
@@ -425,7 +470,7 @@ start_vm_mode() {
 
     qemu_args+=(
         -m "${VM_MEMORY_MB}"
-        -boot order=d
+        -boot once=d
         -drive "file=${iso},media=cdrom,if=ide,index=0"
         -netdev "${netdev_arg}"
         -device "${device_arg}"
@@ -972,26 +1017,60 @@ tui() {
 
 autoinstall_scaffold() {
     ensure_dirs
-    local output="${AUTO_DIR}/answer.toml"
-    local fqdn="${AUTO_HOSTNAME_PREFIX}1.${AUTO_DOMAIN}"
+    local selector="${1:-all}"
     local profile_path="${PROFILE_DIR}/${AUTOINSTALL_PROFILE}.toml"
     local source_template="${TEMPLATE_DIR}/answer.toml.example"
-    if [[ -f "${output}" ]]; then
-        die "${output} already exists"
-    fi
     if [[ -f "${profile_path}" ]]; then
         source_template="${profile_path}"
     fi
-    sed "s/{{FQDN}}/${fqdn}/g" "${source_template}" > "${output}"
-    log "created ${output}"
+
+    autoinstall_scaffold_one() {
+        local index="$1"
+        local output fqdn
+        output="$(node_answer_path "${index}")"
+        fqdn="$(node_fqdn "${index}")"
+        if [[ -f "${output}" ]]; then
+            die "${output} already exists"
+        fi
+        sed \
+            -e "s/{{FQDN}}/${fqdn}/g" \
+            -e "s/{{ROOT_PASSWORD}}/${AUTO_ROOT_PASSWORD}/g" \
+            -e "s/{{MAILTO}}/${AUTO_MAILTO}/g" \
+            "${source_template}" > "${output}"
+        log "created ${output}"
+    }
+
+    if [[ "${selector}" == "all" ]]; then
+        local index
+        for ((index = 1; index <= NUM_VMS; index++)); do
+            autoinstall_scaffold_one "${index}"
+        done
+    else
+        autoinstall_scaffold_one "${selector}"
+    fi
 }
 
 autoinstall_validate() {
-    local answer_file="${1:-${AUTO_DIR}/answer.toml}"
-
     require_command proxmox-auto-install-assistant
-    [[ -f "${answer_file}" ]] || die "missing answer file: ${answer_file}"
+    local selector="${1:-all}"
+    local answer_file index
 
+    if [[ -f "${selector}" ]]; then
+        proxmox-auto-install-assistant validate-answer "${selector}"
+        return 0
+    fi
+
+    if [[ "${selector}" == "all" ]]; then
+        for ((index = 1; index <= NUM_VMS; index++)); do
+            answer_file="$(node_answer_path "${index}")"
+            [[ -f "${answer_file}" ]] || die "missing answer file: ${answer_file}"
+            proxmox-auto-install-assistant validate-answer "${answer_file}"
+        done
+        return 0
+    fi
+
+    answer_file="$(node_answer_path "${selector}")"
+    [[ -f "${answer_file}" ]] || die "missing answer file: ${answer_file}"
     proxmox-auto-install-assistant validate-answer "${answer_file}"
 }
 
@@ -1000,20 +1079,159 @@ autoinstall_prepare_iso() {
     require_command proxmox-auto-install-assistant
 
     local source_iso="${1:-}"
-    local answer_file="${2:-${AUTO_DIR}/answer.toml}"
-    local target
+    local selector="${2:-all}"
+    local answer_file target index
 
     [[ -n "${source_iso}" ]] || die "source ISO path required"
     [[ -f "${source_iso}" ]] || die "missing source ISO: ${source_iso}"
-    [[ -f "${answer_file}" ]] || die "missing answer file: ${answer_file}"
+    [[ "${source_iso}" != *-auto.iso ]] || die "source ISO must be the base Proxmox installer ISO, not an autoinstall ISO"
 
-    target="${ISO_DIR}/$(basename "${source_iso%.iso}")-auto.iso"
+    if [[ -f "${selector}" ]]; then
+        target="${ISO_DIR}/$(basename "${source_iso%.iso}")-auto.iso"
+        proxmox-auto-install-assistant prepare-iso "${source_iso}" \
+            --fetch-from iso \
+            --answer-file "${selector}" \
+            --output "${target}"
+        ln -sfn "${target}" "$(current_iso_path)"
+        log "prepared automated-install ISO ${target}"
+        return 0
+    fi
+
+    if [[ "${selector}" == "all" ]]; then
+        for ((index = 1; index <= NUM_VMS; index++)); do
+            answer_file="$(node_answer_path "${index}")"
+            target="$(node_iso_path "${index}")"
+            [[ -f "${answer_file}" ]] || die "missing answer file: ${answer_file}"
+            proxmox-auto-install-assistant prepare-iso "${source_iso}" \
+                --fetch-from iso \
+                --answer-file "${answer_file}" \
+                --output "${target}"
+            log "prepared automated-install ISO ${target}"
+        done
+        ln -sfn "$(node_iso_path 1)" "$(current_iso_path)"
+        log "current ISO -> $(node_iso_path 1)"
+        return 0
+    fi
+
+    answer_file="$(node_answer_path "${selector}")"
+    [[ -f "${answer_file}" ]] || die "missing answer file: ${answer_file}"
+    target="$(node_iso_path "${selector}")"
     proxmox-auto-install-assistant prepare-iso "${source_iso}" \
         --fetch-from iso \
         --answer-file "${answer_file}" \
         --output "${target}"
-    ln -sfn "${target}" "$(current_iso_path)"
     log "prepared automated-install ISO ${target}"
+}
+
+cluster_scaffold() {
+    ensure_dirs
+
+    local bootstrap_script="${BOOTSTRAP_DIR}/bootstrap-cluster.sh"
+    local readme_path="${BOOTSTRAP_DIR}/README.md"
+    local first_fqdn
+    first_fqdn="$(node_fqdn 1)"
+
+    cat > "${bootstrap_script}" <<EOF
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SSH_USER="\${SSH_USER:-root}"
+FIRST_NODE_FQDN="\${FIRST_NODE_FQDN:-${first_fqdn}}"
+CLUSTER_NAME="\${CLUSTER_NAME:-${CLUSTER_NAME}}"
+DATA_ZPOOL_NAME="\${DATA_ZPOOL_NAME:-${DATA_ZPOOL_NAME}}"
+DATA_STORAGE_ID="\${DATA_STORAGE_ID:-${DATA_STORAGE_ID}}"
+DATA_STORAGE_CONTENT="\${DATA_STORAGE_CONTENT:-${DATA_STORAGE_CONTENT}}"
+DATA_ZPOOL_DEVICES="\${DATA_ZPOOL_DEVICES:-${DATA_ZPOOL_DEVICES}}"
+NODE_FQDNS=(
+EOF
+    local index
+    for ((index = 1; index <= NUM_VMS; index++)); do
+        printf '  "%s"\n' "$(node_fqdn "${index}")" >> "${bootstrap_script}"
+    done
+    cat >> "${bootstrap_script}" <<'EOF'
+)
+
+ssh_node() {
+    local target="$1"
+    shift
+    ssh -o StrictHostKeyChecking=accept-new "${SSH_USER}@${target}" "$@"
+}
+
+configure_data_pool() {
+    local target="$1"
+    ssh_node "${target}" \
+        "DATA_ZPOOL_NAME='${DATA_ZPOOL_NAME}' DATA_STORAGE_ID='${DATA_STORAGE_ID}' DATA_STORAGE_CONTENT='${DATA_STORAGE_CONTENT}' DATA_ZPOOL_DEVICES='${DATA_ZPOOL_DEVICES}' bash -s" <<'REMOTE'
+set -euo pipefail
+DATA_ZPOOL_NAME="${DATA_ZPOOL_NAME}"
+DATA_STORAGE_ID="${DATA_STORAGE_ID}"
+DATA_STORAGE_CONTENT="${DATA_STORAGE_CONTENT}"
+read -r -a pool_devs <<<"${DATA_ZPOOL_DEVICES}"
+
+if ! zpool list -H -o name "${DATA_ZPOOL_NAME}" >/dev/null 2>&1; then
+    zpool create -f "${DATA_ZPOOL_NAME}" mirror "/dev/${pool_devs[0]}" "/dev/${pool_devs[1]}"
+fi
+
+if ! pvesm status --storage "${DATA_STORAGE_ID}" >/dev/null 2>&1; then
+    pvesm add zfspool "${DATA_STORAGE_ID}" -pool "${DATA_ZPOOL_NAME}" -content "${DATA_STORAGE_CONTENT}"
+fi
+REMOTE
+}
+
+create_cluster() {
+    ssh_node "${FIRST_NODE_FQDN}" "pvecm status >/dev/null 2>&1 || pvecm create \"${CLUSTER_NAME}\""
+}
+
+join_cluster() {
+    local target="$1"
+    ssh_node "${target}" "pvecm status >/dev/null 2>&1 || pvecm add \"${FIRST_NODE_FQDN}\" -use_ssh 1"
+}
+
+main() {
+    create_cluster
+
+    local node
+    for node in "${NODE_FQDNS[@]}"; do
+        configure_data_pool "${node}"
+    done
+
+    local index
+    for ((index = 1; index < ${#NODE_FQDNS[@]}; index++)); do
+        join_cluster "${NODE_FQDNS[index]}"
+    done
+}
+
+main "$@"
+EOF
+    chmod +x "${bootstrap_script}"
+
+    cat > "${readme_path}" <<EOF
+# Cluster bootstrap
+
+Generated by \`proxmox-lab cluster scaffold\`.
+
+This directory contains a host-side helper script for the second phase of the lab:
+
+- create the Proxmox cluster on node 1
+- join nodes 2..${NUM_VMS}
+- create \`${DATA_ZPOOL_NAME}\` from \`${DATA_ZPOOL_DEVICES}\` on every node
+- register that pool in Proxmox storage as \`${DATA_STORAGE_ID}\`
+
+Expected prerequisites:
+
+- unattended install completed on all nodes
+- nodes reachable over SSH as \`root@\$(node_fqdn N)\`
+- host can resolve node FQDNs
+
+Run:
+
+\`\`\`bash
+${bootstrap_script}
+\`\`\`
+EOF
+
+    log "created ${bootstrap_script}"
+    log "created ${readme_path}"
 }
 
 menu() {
@@ -1029,7 +1247,8 @@ menu() {
         "clean all" \
         "network up" \
         "network down" \
-        "quit"; do
+                "cluster scaffold" \
+                "quit"; do
         case "${action}" in
             "status") status ;;
             "init") init_workspace ;;
@@ -1041,6 +1260,7 @@ menu() {
             "clean all") clean_all ;;
             "network up") network_up ;;
             "network down") network_down ;;
+            "cluster scaffold") cluster_scaffold ;;
             "quit") break ;;
             *) warn "invalid choice" ;;
         esac
@@ -1109,7 +1329,8 @@ main() {
             case "${1:-}" in
                 fetch) shift; iso_fetch "${1:-latest}" ;;
                 current) iso_current ;;
-                *) die "usage: proxmox-lab iso fetch [latest|VERSION|URL] | current" ;;
+                configured-path) configured_iso_path ;;
+                *) die "usage: proxmox-lab iso fetch [latest|VERSION|URL] | current | configured-path" ;;
             esac
             ;;
         network)
@@ -1168,10 +1389,16 @@ main() {
             ;;
         autoinstall)
             case "${1:-}" in
-                scaffold) autoinstall_scaffold ;;
+                scaffold) shift; autoinstall_scaffold "${1:-all}" ;;
                 validate) shift; autoinstall_validate "${1:-}" ;;
                 prepare-iso) shift; autoinstall_prepare_iso "${1:-}" "${2:-}" ;;
-                *) die "usage: proxmox-lab autoinstall scaffold|validate [ANSWER_FILE]|prepare-iso SOURCE_ISO [ANSWER_FILE]" ;;
+                *) die "usage: proxmox-lab autoinstall scaffold [all|INDEX]|validate [all|INDEX|ANSWER_FILE]|prepare-iso SOURCE_ISO [all|INDEX|ANSWER_FILE]" ;;
+            esac
+            ;;
+        cluster)
+            case "${1:-}" in
+                scaffold) cluster_scaffold ;;
+                *) die "usage: proxmox-lab cluster scaffold" ;;
             esac
             ;;
         *)

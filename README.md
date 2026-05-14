@@ -1,6 +1,6 @@
 # Proxmox Lab
 
-`proxmox-lab` is a small QEMU-based lab for spinning up repeatable Proxmox VE installer VMs, preparing unattended installation media, and testing host-side install workflows without managing the full setup by hand.
+`proxmox-lab` is a small QEMU-based lab for spinning up repeatable Proxmox VE installer VMs, preparing unattended installation media, and rehearsing a full 3-node Proxmox cluster build on one host.
 
 Repository: `https://github.com/manzolo/proxmox-lab`
 
@@ -8,14 +8,16 @@ Repository: `https://github.com/manzolo/proxmox-lab`
 
 - Creates and manages multi-disk VM layouts for Proxmox VE test nodes.
 - Downloads Proxmox VE ISOs with fallback CDN handling when the primary endpoint is misconfigured.
-- Builds unattended install media with `proxmox-auto-install-assistant`.
+- Builds per-node unattended install media with `proxmox-auto-install-assistant`.
+- Scaffolds host-side bootstrap scripts for cluster creation and ZFS data-pool setup.
 - Starts VMs in GTK or headless mode for smoke testing and serial inspection.
 - Keeps all generated state under `artifacts/` instead of cluttering the repo root.
 
-The current unattended install profile is set up for:
+The default unattended profile is set up for:
 - Proxmox VE `9.1-1`
-- ZFS root
-- RAID-1 mirror on `sda` and `sdb`
+- three lab nodes
+- ZFS root on a mirror of `sda` and `sdb`
+- a second mirror candidate on `sdc` and `sdd` for VM/LXC storage after install
 - DHCP networking
 
 That profile lives in `profiles/zfs-mirror.toml` and is the default source used by `autoinstall scaffold`.
@@ -26,6 +28,7 @@ That profile lives in `profiles/zfs-mirror.toml` and is the default source used 
 - `config.env.example`: host-side configuration template
 - `templates/answer.toml.example`: autoinstall answer template
 - `profiles/zfs-mirror.toml`: default unattended install profile
+- `artifacts/bootstrap/`: generated host-side scripts for cluster and storage bootstrap
 - `tap/`: compatibility wrappers for the TAP networking workflow
 - `artifacts/`: generated ISOs, disks, logs, pid files, monitor sockets, autoinstall files
 - `.github/workflows/ci.yml`: shell lint and autoinstall media verification
@@ -38,7 +41,10 @@ make init
 make status
 make iso-latest
 make create
-make start
+make autoinstall-scaffold
+make autoinstall-validate
+make autoinstall-prepare
+make start-headless
 ```
 
 For the interactive terminal UI:
@@ -59,30 +65,68 @@ make vm-serial
 make clean-all
 make autoinstall-scaffold
 make autoinstall-validate
+make autoinstall-prepare
+make cluster-scaffold
 ```
 
 ## Unattended install flow
 
-Generate and validate the answer file:
+Generate and validate the per-node answer files:
 
 ```bash
 make autoinstall-scaffold
 make autoinstall-validate
 ```
 
-Prepare an unattended ISO:
+Prepare unattended ISOs for all nodes:
 
 ```bash
-./bin/proxmox-lab autoinstall prepare-iso artifacts/iso/proxmox-ve_9.1-1.iso artifacts/autoinstall/answer.toml
+make autoinstall-prepare
 ```
 
-Smoke test it headlessly:
+This creates:
+
+- `artifacts/autoinstall/pve01-answer.toml`
+- `artifacts/autoinstall/pve02-answer.toml`
+- `artifacts/autoinstall/pve03-answer.toml`
+- `artifacts/iso/pve01-auto.iso`
+- `artifacts/iso/pve02-auto.iso`
+- `artifacts/iso/pve03-auto.iso`
+
+Each VM automatically prefers its own `pve0N-auto.iso` when present.
+
+Smoke test node 1 headlessly:
 
 ```bash
 ./bin/proxmox-lab vm start-headless 1
 ./bin/proxmox-lab vm inspect 1
 ./bin/proxmox-lab vm serial 1
 ```
+
+The launcher uses `boot once=d`, so the installer boots from ISO only on the first boot. After the guest reboots, QEMU should continue from the installed disks instead of looping back into the installer.
+
+## Cluster bootstrap
+
+The unattended install only lays down the nodes. The cluster and extra storage pool are a second phase.
+
+Generate the helper script:
+
+```bash
+make cluster-scaffold
+```
+
+That produces `artifacts/bootstrap/bootstrap-cluster.sh`, which assumes:
+
+- all 3 nodes finished installation
+- the host can reach `root@pvelab1.lab.local`, `root@pvelab2.lab.local`, `root@pvelab3.lab.local`
+- SSH authentication is available
+
+The script then:
+
+- creates the Proxmox cluster on node 1
+- joins nodes 2 and 3
+- creates `vmdata` as a mirror on `sdc` and `sdd` on each node
+- registers that pool in Proxmox as storage for `images,rootdir`
 
 ## Configuration
 
@@ -94,6 +138,9 @@ Copy `config.env.example` to `config.env` and tune:
 - `PROXMOX_ISO_VERSION`
 - `ISO_URL_INDEX` and `ISO_URL_FALLBACKS`
 - `AUTOINSTALL_PROFILE`
+- `AUTO_ROOT_PASSWORD`, `AUTO_MAILTO`
+- `CLUSTER_NAME`
+- `DATA_ZPOOL_NAME`, `DATA_ZPOOL_DEVICES`, `DATA_STORAGE_ID`
 
 `ALLOW_INSECURE_TLS=1` exists only as a lab fallback for broken TLS interception or hostname mismatch scenarios. Prefer fixing DNS, proxying, or trust configuration first.
 
