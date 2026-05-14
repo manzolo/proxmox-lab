@@ -1103,6 +1103,8 @@ docker_autoinstall_run() {
     done
     log "running in Docker (${DOCKER_AUTOINSTALL_IMAGE}): ${translated[*]}"
     docker run --rm -i \
+        -e HOST_UID="$(id -u)" \
+        -e HOST_GID="$(id -g)" \
         -v "${REPO_ROOT}:/workspace" \
         -w /workspace \
         "${DOCKER_AUTOINSTALL_IMAGE}" \
@@ -1119,6 +1121,7 @@ printf 'Types: deb\nURIs: http://download.proxmox.com/debian/pve\nSuites: trixie
 apt-get update -qq >/dev/null
 apt-get install -y -qq proxmox-auto-install-assistant >/dev/null
 ./bin/proxmox-lab "$@"
+find /workspace/artifacts -user 0 -exec chown "${HOST_UID}:${HOST_GID}" {} + 2>/dev/null || true
 PROXMOX_LAB_DOCKER
 }
 
