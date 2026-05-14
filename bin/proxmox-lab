@@ -15,6 +15,7 @@ LOGS_DIR="${ARTIFACTS_DIR}/logs"
 RUN_DIR="${ARTIFACTS_DIR}/run"
 AUTO_DIR="${ARTIFACTS_DIR}/autoinstall"
 TEMPLATE_DIR="${REPO_ROOT}/templates"
+PROFILE_DIR="${REPO_ROOT}/profiles"
 
 NUM_VMS=3
 VM_PREFIX="pve0"
@@ -39,6 +40,7 @@ QEMU_BIN="qemu-system-x86_64"
 QEMU_IMG_BIN="qemu-img"
 AUTO_HOSTNAME_PREFIX="pvelab"
 AUTO_DOMAIN="lab.local"
+AUTOINSTALL_PROFILE="zfs-mirror"
 
 declare -a CONFIG_OVERRIDES=()
 
@@ -972,10 +974,15 @@ autoinstall_scaffold() {
     ensure_dirs
     local output="${AUTO_DIR}/answer.toml"
     local fqdn="${AUTO_HOSTNAME_PREFIX}1.${AUTO_DOMAIN}"
+    local profile_path="${PROFILE_DIR}/${AUTOINSTALL_PROFILE}.toml"
+    local source_template="${TEMPLATE_DIR}/answer.toml.example"
     if [[ -f "${output}" ]]; then
         die "${output} already exists"
     fi
-    sed "s/{{FQDN}}/${fqdn}/g" "${TEMPLATE_DIR}/answer.toml.example" > "${output}"
+    if [[ -f "${profile_path}" ]]; then
+        source_template="${profile_path}"
+    fi
+    sed "s/{{FQDN}}/${fqdn}/g" "${source_template}" > "${output}"
     log "created ${output}"
 }
 

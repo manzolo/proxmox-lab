@@ -1,6 +1,5 @@
-# Starter file for `proxmox-auto-install-assistant`.
-# The default lab profile assumes ZFS root on a mirror of the first two disks.
-# Review against the official Proxmox automated installation docs before use.
+# Default autoinstall profile for a Proxmox VE lab node
+# using ZFS root on a mirror of the first two disks.
 
 [global]
 keyboard = "en-us"
