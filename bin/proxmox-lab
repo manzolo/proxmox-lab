@@ -1439,6 +1439,7 @@ _W_YELLOW=$'\033[1;33m'
 _W_CYAN=$'\033[0;36m'
 _W_RED=$'\033[0;31m'
 _W_STEP=0
+_W_LANG=en
 
 _wiz_sep() {
     printf '%s  ────────────────────────────────────────────────────%s\n' "${_W_CYAN}" "${_W_RESET}"
@@ -1453,7 +1454,8 @@ _wiz_step() {
 }
 
 _wiz_pause() {
-    printf '\n%s  → Premi INVIO per continuare, Ctrl+C per annullare... %s' "${_W_YELLOW}" "${_W_RESET}"
+    local msg="${1:-Press ENTER to continue, Ctrl+C to abort}"
+    printf '\n%s  → %s %s' "${_W_YELLOW}" "${msg}" "${_W_RESET}"
     read -r
     printf '\n'
 }
@@ -1479,14 +1481,22 @@ _wiz_warn() { printf '  %s⚠  %s%s\n' "${_W_YELLOW}" "$*" "${_W_RESET}"; }
 _wiz_wait_ssh() {
     local target="$1"
     local attempts=0
-    printf '    attendo SSH su %s ' "${target}"
+    if [[ "${_W_LANG}" == "it" ]]; then
+        printf '    attendo SSH su %s ' "${target}"
+    else
+        printf '    waiting for SSH on %s ' "${target}"
+    fi
     while ! (: >/dev/tcp/"${target}"/22) 2>/dev/null; do
         printf '.'
         sleep 5
         attempts=$((attempts + 1))
         if [[ "${attempts}" -gt 72 ]]; then
             printf ' timeout\n'
-            warn "SSH su ${target} non disponibile dopo 6 minuti — verifica il boot con: make vm-serial"
+            if [[ "${_W_LANG}" == "it" ]]; then
+                warn "SSH su ${target} non disponibile dopo 6 minuti — verifica il boot con: make vm-serial"
+            else
+                warn "SSH on ${target} unavailable after 6 minutes — check boot with: make vm-serial"
+            fi
             return 1
         fi
     done
@@ -1494,9 +1504,129 @@ _wiz_wait_ssh() {
 }
 
 wizard() {
+    local lang="${1:-en}"
+    _W_LANG="${lang}"
     _W_STEP=0
     local self
     self="$(readlink -f "${BASH_SOURCE[0]}")"
+
+    # Pre-compute dynamic values used inside translations
+    local iso_path subnet
+    iso_path="$(configured_iso_path)"
+    subnet="${NODE_FIRST_IP%.*}.0/${NODE_PREFIX_LEN}"
+
+    # ── Translations ──────────────────────────────────────────────────────────
+    local t_subtitle t_active_config t_nodes t_profile t_accel t_net_tap
+    local t_net_user t_node_ips t_continue t_warn_changeme t_die_changeme
+    local t_missing t_s1_title t_s1_desc t_s1_miss_qemu t_s1_miss_ip
+    local t_s1_ok_docker t_s1_miss_tool
+    local t_s2_title t_s2_desc t_s3_title t_s3_desc
+    local t_s4_title t_s4_desc t_s4_present t_s4_run
+    local t_s5_title t_s5_desc t_s6_title t_s6_desc t_s6_nat_warn t_s6_nat_ready
+    local t_s7_title t_s7_desc t_s8_title t_s8_desc t_s9_title t_s9_desc
+    local t_s10_title t_s10_desc t_s10_keygen t_s10_copy
+    local t_s11_title t_s11_desc
+    local t_fin_title t_fin_access t_fin_node t_fin_user t_fin_pw
+    local t_fin_verify t_fin_stop
+
+    case "${lang}" in
+    it)
+        t_subtitle="Questo wizard ti guida nella creazione di un cluster Proxmox VE\na %d nodi su QEMU/KVM con root ZFS mirror e pool VM ZFS."
+        t_active_config="Configurazione attiva (%s):"
+        t_nodes="Nodi";        t_profile="Profilo";    t_accel="Accel"
+        t_net_tap="Rete";      t_net_user="Rete";      t_node_ips="IP nodi"
+        t_continue="Premi INVIO per continuare, Ctrl+C per annullare"
+        t_warn_changeme="AUTO_ROOT_PASSWORD è ancora 'CHANGEME' — imposta una password sicura in config.env"
+        t_die_changeme="modifica AUTO_ROOT_PASSWORD in config.env prima di eseguire il wizard"
+        t_missing="installa i prerequisiti mancanti e riprova"
+        t_s1_title="Prerequisiti"
+        t_s1_desc="Verifico che gli strumenti necessari siano presenti sull'host."
+        t_s1_miss_qemu="non trovato — installa qemu-system-x86"
+        t_s1_miss_ip="ip non trovato — installa iproute2"
+        t_s1_ok_docker="docker  (usato come fallback per proxmox-auto-install-assistant)"
+        t_s1_miss_tool="né proxmox-auto-install-assistant né docker trovati"
+        t_s2_title="Pulizia artefatti esistenti"
+        t_s2_desc="Rimuovo dischi, log, pid file e ISO per-nodo precedenti.\n  L'ISO base scaricato viene mantenuto."
+        t_s3_title="Inizializzazione directory"
+        t_s3_desc="Creo le directory artifacts/ necessarie."
+        t_s4_title="ISO Proxmox VE ${PROXMOX_ISO_VERSION}"
+        t_s4_desc="L'ISO base viene scaricato una sola volta e riutilizzato per tutti i nodi.\n  Destinazione: ${iso_path}"
+        t_s4_present="ISO già presente, salto il download"
+        t_s4_run="scarico ISO ${PROXMOX_ISO_VERSION}"
+        t_s5_title="Generazione ISO unattended per ogni nodo"
+        t_s5_desc="Per ogni nodo creo un file di risposta TOML con hostname, IP statico, password\n  e layout disco, poi lo incorporo in una copia dell'ISO base.\n  Risultato: artifacts/iso/pve0N-auto.iso"
+        t_s6_title="Rete TAP/bridge — richiede sudo"
+        t_s6_desc="Creo il bridge ${BRIDGE_NAME} con IP ${BRIDGE_ADDRESS:-<BRIDGE_ADDRESS non impostato>}\n  e i TAP ${TAP_PREFIX}1…${TAP_PREFIX}${NUM_VMS}.\n\n  IMPORTANTE — NAT per accesso internet durante l'install:\n    sudo sysctl -w net.ipv4.ip_forward=1\n    sudo iptables -t nat -A POSTROUTING -s ${subnet} -o \$(ip route get 8.8.8.8 | awk '/dev/{print \$5; exit}') -j MASQUERADE\n  Senza NAT l'install funziona ma potrebbe rallentare su timeout NTP/DNS."
+        t_s6_nat_warn="Ricorda di aggiungere le regole NAT sopra per avere accesso internet durante l'install."
+        t_s6_nat_ready="Premi INVIO quando sei pronto (o subito se hai già il NAT attivo)..."
+        t_s7_title="Creazione dischi VM"
+        t_s7_desc="Per ogni nodo creo 4 dischi qcow2 in artifacts/disks/:\n  · a1 + a2  (20 GB ciascuno) → sda + sdb  — root ZFS mirror (rpool)\n  · b1 + b2  (40 GB ciascuno) → sdc + sdd  — pool VM ZFS (${DATA_ZPOOL_NAME})"
+        t_s8_title="Installazione unattended (sequenziale)"
+        t_s8_desc="Ogni VM si avvia dall'ISO unattended e installa Proxmox su ZFS mirror.\n  QEMU esce automaticamente al riavvio che segnala il termine dell'install.\n  Durata stimata: 15–30 minuti per nodo (dipende da I/O e CPU).\n\n  Monitora il progresso in un altro terminale:\n    watch -n 10 'ls -lh artifacts/disks/pve0*a1.qcow2'"
+        t_s9_title="Boot dei nodi installati"
+        t_s9_desc="I nodi si avviano dal disco in modalità headless (background).\n  Il log seriale è in artifacts/logs/pve0N-serial.log.\n  Aspetto che SSH sia disponibile su tutti i nodi prima di continuare."
+        t_s10_title="Configurazione accesso SSH host → nodi"
+        t_s10_desc="Il bootstrap ha bisogno di SSH passwordless dall'host verso i nodi.\n  Userò ssh-copy-id per copiare la chiave pubblica dell'host su ogni nodo.\n  Ti verrà chiesta la password root (${AUTO_ROOT_PASSWORD}) una volta per nodo."
+        t_s10_keygen="genera chiave SSH host"
+        t_s10_copy="copia chiave SSH su nodo"
+        t_s11_title="Bootstrap cluster"
+        t_s11_desc="Genero il bootstrap script ed eseguo automaticamente:\n  1. Scambio chiavi SSH tra i nodi (per pvecm add -use_ssh 1)\n  2. pvecm create ${CLUSTER_NAME}  su pve01\n  3. zpool create ${DATA_ZPOOL_NAME}  su ogni nodo (con percorsi by-id stabili)\n  4. Registrazione storage vmdata in Proxmox\n  5. pvecm add  su pve02…pve0${NUM_VMS}"
+        t_fin_title="✓  Lab Proxmox VE pronto!"
+        t_fin_access="Accedi alla UI web:"
+        t_fin_node="Nodo %d"
+        t_fin_user="Utente";   t_fin_pw="Password"
+        t_fin_verify="Verifica cluster:"
+        t_fin_stop="Per spegnere il lab:"
+        ;;
+    *)  # en
+        t_subtitle="This wizard guides you through building a %d-node Proxmox VE\ncluster on QEMU/KVM with ZFS mirror root and VM storage pool."
+        t_active_config="Active configuration (%s):"
+        t_nodes="Nodes";       t_profile="Profile";    t_accel="Accel"
+        t_net_tap="Network";   t_net_user="Network";   t_node_ips="Node IPs"
+        t_continue="Press ENTER to continue, Ctrl+C to abort"
+        t_warn_changeme="AUTO_ROOT_PASSWORD is still 'CHANGEME' — set a secure password in config.env"
+        t_die_changeme="set AUTO_ROOT_PASSWORD in config.env before running the wizard"
+        t_missing="install the missing prerequisites and retry"
+        t_s1_title="Prerequisites"
+        t_s1_desc="Checking that required tools are installed on the host."
+        t_s1_miss_qemu="not found — install qemu-system-x86"
+        t_s1_miss_ip="ip not found — install iproute2"
+        t_s1_ok_docker="docker  (used as fallback for proxmox-auto-install-assistant)"
+        t_s1_miss_tool="neither proxmox-auto-install-assistant nor docker found"
+        t_s2_title="Clean existing artifacts"
+        t_s2_desc="Removing previous disks, logs, pid files, and per-node ISOs.\n  The downloaded base ISO is kept."
+        t_s3_title="Initialise directories"
+        t_s3_desc="Creating the artifacts/ directory structure."
+        t_s4_title="Proxmox VE ISO ${PROXMOX_ISO_VERSION}"
+        t_s4_desc="The base ISO is downloaded once and reused for all nodes.\n  Destination: ${iso_path}"
+        t_s4_present="ISO already present, skipping download"
+        t_s4_run="download ISO ${PROXMOX_ISO_VERSION}"
+        t_s5_title="Build per-node unattended ISOs"
+        t_s5_desc="For each node, a TOML answer file is generated (hostname, static IP,\n  password, disk layout) and embedded into a copy of the base ISO.\n  Output: artifacts/iso/pve0N-auto.iso"
+        t_s6_title="TAP/bridge network — requires sudo"
+        t_s6_desc="Creating bridge ${BRIDGE_NAME} with IP ${BRIDGE_ADDRESS:-<BRIDGE_ADDRESS not set>}\n  and TAP interfaces ${TAP_PREFIX}1…${TAP_PREFIX}${NUM_VMS}.\n\n  IMPORTANT — NAT for internet access during the install:\n    sudo sysctl -w net.ipv4.ip_forward=1\n    sudo iptables -t nat -A POSTROUTING -s ${subnet} -o \$(ip route get 8.8.8.8 | awk '/dev/{print \$5; exit}') -j MASQUERADE\n  Without NAT the install completes but may slow down on NTP/DNS timeouts."
+        t_s6_nat_warn="Remember to add the NAT rules above for internet access during the install."
+        t_s6_nat_ready="Press ENTER when ready (or immediately if NAT is already active)..."
+        t_s7_title="Create VM disks"
+        t_s7_desc="Creating 4 qcow2 disks per node in artifacts/disks/:\n  · a1 + a2  (20 GB each) → sda + sdb  — root ZFS mirror (rpool)\n  · b1 + b2  (40 GB each) → sdc + sdd  — VM storage ZFS pool (${DATA_ZPOOL_NAME})"
+        t_s8_title="Unattended install (serial)"
+        t_s8_desc="Each VM boots from its unattended ISO and installs Proxmox on a ZFS mirror.\n  QEMU exits automatically when the installer reboots, signalling completion.\n  Estimated time: 15–30 min per node (depends on I/O and CPU).\n\n  Monitor progress in another terminal:\n    watch -n 10 'ls -lh artifacts/disks/pve0*a1.qcow2'"
+        t_s9_title="Boot installed nodes"
+        t_s9_desc="Nodes boot from disk in headless mode (background).\n  Serial log is at artifacts/logs/pve0N-serial.log.\n  Waiting for SSH to become available on all nodes before proceeding."
+        t_s10_title="Configure SSH access host → nodes"
+        t_s10_desc="The bootstrap script needs passwordless SSH from the host to the nodes.\n  Using ssh-copy-id to copy the host public key to each node.\n  You will be prompted for the root password (${AUTO_ROOT_PASSWORD}) once per node."
+        t_s10_keygen="generate host SSH key"
+        t_s10_copy="copy SSH key to node"
+        t_s11_title="Bootstrap cluster"
+        t_s11_desc="Generating the bootstrap script and running it automatically:\n  1. SSH key exchange between nodes (for pvecm add -use_ssh 1)\n  2. pvecm create ${CLUSTER_NAME}  on pve01\n  3. zpool create ${DATA_ZPOOL_NAME}  on each node (using stable by-id paths)\n  4. Register vmdata storage in Proxmox\n  5. pvecm add  on pve02…pve0${NUM_VMS}"
+        t_fin_title="✓  Proxmox VE Lab ready!"
+        t_fin_access="Access the web UI:"
+        t_fin_node="Node %d"
+        t_fin_user="User";     t_fin_pw="Password"
+        t_fin_verify="Verify cluster:"
+        t_fin_stop="To shut down the lab:"
+        ;;
+    esac
 
     # ── Banner ────────────────────────────────────────────────────────────────
     printf '\n%s' "${_W_BOLD}${_W_CYAN}"
@@ -1504,41 +1634,37 @@ wizard() {
     printf '║   Proxmox VE Lab — Setup Wizard                     ║\n'
     printf '╚══════════════════════════════════════════════════════╝\n'
     printf '%s\n' "${_W_RESET}"
-    printf 'Questo wizard ti guida nella creazione di un cluster Proxmox VE\n'
-    printf 'a %d nodi su QEMU/KVM con root ZFS mirror e pool VM ZFS.\n\n' "${NUM_VMS}"
-    printf 'Configurazione attiva (%s):\n' "${CONFIG_FILE}"
-    _wiz_info "Nodi:             ${NUM_VMS}  (${VM_PREFIX}1 … ${VM_PREFIX}${NUM_VMS})"
-    _wiz_info "Profilo:          ${AUTOINSTALL_PROFILE}"
-    _wiz_info "Accel:            ${VM_ACCEL}  RAM: ${VM_MEMORY_MB} MB  CPU: ${VM_CORES} core"
+    printf '%b\n\n' "${t_subtitle/\%d/${NUM_VMS}}"
+    printf '%s\n' "${t_active_config/\%s/${CONFIG_FILE}}"
+    _wiz_info "${t_nodes}:             ${NUM_VMS}  (${VM_PREFIX}1 … ${VM_PREFIX}${NUM_VMS})"
+    _wiz_info "${t_profile}:          ${AUTOINSTALL_PROFILE}"
+    _wiz_info "${t_accel}:            ${VM_ACCEL}  RAM: ${VM_MEMORY_MB} MB  CPU: ${VM_CORES} core"
     if [[ "${USE_TAP_NETWORK}" == "1" ]]; then
-        _wiz_info "Rete:             TAP bridge ${BRIDGE_NAME}  (${BRIDGE_ADDRESS:-IP non impostato})"
-        if [[ -n "${NODE_FIRST_IP}" ]]; then
-            _wiz_info "IP nodi:          ${NODE_FIRST_IP} … +$((NUM_VMS - 1))"
-        fi
+        _wiz_info "${t_net_tap}:             TAP bridge ${BRIDGE_NAME}  (${BRIDGE_ADDRESS:-?})"
+        [[ -n "${NODE_FIRST_IP}" ]] && _wiz_info "${t_node_ips}:          ${NODE_FIRST_IP} … +$((NUM_VMS - 1))"
     else
-        _wiz_info "Rete:             user-mode QEMU NAT"
+        _wiz_info "${t_net_user}:             user-mode QEMU NAT"
     fi
     _wiz_info "Cluster:          ${CLUSTER_NAME}"
-    _wiz_info "Root password:    ${AUTO_ROOT_PASSWORD}"
+    _wiz_info "${t_fin_pw}:    ${AUTO_ROOT_PASSWORD}"
     _wiz_info "Proxmox ISO:      ${PROXMOX_ISO_VERSION}"
     printf '\n'
 
     if [[ "${AUTO_ROOT_PASSWORD}" == "CHANGEME" ]]; then
-        _wiz_warn "AUTO_ROOT_PASSWORD è ancora 'CHANGEME' — imposta una password sicura in config.env"
-        die "modifica AUTO_ROOT_PASSWORD in config.env prima di eseguire il wizard"
+        _wiz_warn "${t_warn_changeme}"
+        die "${t_die_changeme}"
     fi
 
-    _wiz_pause
+    _wiz_pause "${t_continue}"
 
-    # ── 1. Prerequisiti ───────────────────────────────────────────────────────
-    _wiz_step "Prerequisiti" \
-        "Verifico che gli strumenti necessari siano presenti sull'host."
+    # ── 1. Prerequisites / Prerequisiti ───────────────────────────────────────
+    _wiz_step "${t_s1_title}" "${t_s1_desc}"
     local prereq_ok=1
     for _cmd in "${QEMU_BIN}" "${QEMU_IMG_BIN}"; do
         if command -v "${_cmd}" >/dev/null 2>&1; then
             _wiz_ok "${_cmd}"
         else
-            _wiz_warn "${_cmd} non trovato — installa qemu-system-x86"
+            _wiz_warn "${_cmd} ${t_s1_miss_qemu}"
             prereq_ok=0
         fi
     done
@@ -1546,132 +1672,117 @@ wizard() {
         if command -v ip >/dev/null 2>&1; then
             _wiz_ok "iproute2 (ip)"
         else
-            _wiz_warn "ip non trovato — installa iproute2"
+            _wiz_warn "${t_s1_miss_ip}"
             prereq_ok=0
         fi
     fi
     if command -v proxmox-auto-install-assistant >/dev/null 2>&1; then
         _wiz_ok "proxmox-auto-install-assistant"
     elif command -v docker >/dev/null 2>&1; then
-        _wiz_ok "docker  (usato come fallback per proxmox-auto-install-assistant)"
+        _wiz_ok "${t_s1_ok_docker}"
     else
-        _wiz_warn "né proxmox-auto-install-assistant né docker trovati"
+        _wiz_warn "${t_s1_miss_tool}"
         prereq_ok=0
     fi
-    [[ "${prereq_ok}" == "1" ]] || die "installa i prerequisiti mancanti e riprova"
+    [[ "${prereq_ok}" == "1" ]] || die "${t_missing}"
 
-    # ── 2. Pulizia ────────────────────────────────────────────────────────────
-    _wiz_step "Pulizia artefatti esistenti" \
-        "Rimuovo dischi, log, pid file e ISO per-nodo precedenti.\n  L'ISO base scaricato viene mantenuto."
-    _wiz_pause
-    _wiz_run "clean all" "make clean-all" clean_all
+    # ── 2. Clean ──────────────────────────────────────────────────────────────
+    _wiz_step "${t_s2_title}" "${t_s2_desc}"
+    _wiz_pause "${t_continue}"
+    _wiz_run "${t_s2_title}" "make clean-all" clean_all
 
     # ── 3. Init ───────────────────────────────────────────────────────────────
-    _wiz_step "Inizializzazione directory" \
-        "Creo le directory artifacts/ necessarie."
-    _wiz_run "init" "make init" init_workspace
+    _wiz_step "${t_s3_title}" "${t_s3_desc}"
+    _wiz_run "${t_s3_title}" "make init" init_workspace
 
     # ── 4. ISO ────────────────────────────────────────────────────────────────
-    local iso_path
-    iso_path="$(configured_iso_path)"
-    _wiz_step "ISO Proxmox VE ${PROXMOX_ISO_VERSION}" \
-        "L'ISO base viene scaricato una sola volta e riutilizzato per tutti i nodi.\n  Destinazione: ${iso_path}"
+    _wiz_step "${t_s4_title}" "${t_s4_desc}"
     if [[ -f "${iso_path}" ]]; then
-        _wiz_ok "ISO già presente, salto il download"
+        _wiz_ok "${t_s4_present}"
     else
-        _wiz_pause
-        _wiz_run "scarico ISO ${PROXMOX_ISO_VERSION}" "make iso-configured" iso_fetch configured
+        _wiz_pause "${t_continue}"
+        _wiz_run "${t_s4_run}" "make iso-configured" iso_fetch configured
     fi
 
     # ── 5. Autoinstall ISOs ───────────────────────────────────────────────────
-    _wiz_step "Generazione ISO unattended per ogni nodo" \
-        "Per ogni nodo creo un file di risposta TOML con hostname, IP statico, password\n  e layout disco, poi lo incorporo in una copia dell'ISO base.\n  Risultato: artifacts/iso/pve0N-auto.iso"
-    _wiz_pause
+    _wiz_step "${t_s5_title}" "${t_s5_desc}"
+    _wiz_pause "${t_continue}"
     _wiz_run "autoinstall scaffold" "make autoinstall-scaffold" autoinstall_scaffold all
     _wiz_run "autoinstall prepare-iso" "make autoinstall-prepare" autoinstall_prepare_iso "${iso_path}" all
 
-    # ── 6. Rete TAP ───────────────────────────────────────────────────────────
+    # ── 6. TAP network ────────────────────────────────────────────────────────
     if [[ "${USE_TAP_NETWORK}" == "1" ]]; then
-        local subnet="${NODE_FIRST_IP%.*}.0/${NODE_PREFIX_LEN}"
-        _wiz_step "Rete TAP/bridge — richiede sudo" \
-            "Creo il bridge ${BRIDGE_NAME} con IP ${BRIDGE_ADDRESS:-<BRIDGE_ADDRESS non impostato>}\n  e i TAP ${TAP_PREFIX}1…${TAP_PREFIX}${NUM_VMS}.\n\n  IMPORTANTE — NAT per accesso internet durante l'install:\n    sudo sysctl -w net.ipv4.ip_forward=1\n    sudo iptables -t nat -A POSTROUTING -s ${subnet} -o \$(ip route get 8.8.8.8 | awk '/dev/{print \$5; exit}') -j MASQUERADE\n  Senza NAT l'install funziona ma potrebbe rallentare su timeout NTP/DNS."
-        _wiz_pause
+        _wiz_step "${t_s6_title}" "${t_s6_desc}"
+        _wiz_pause "${t_continue}"
         _wiz_run "network up" "sudo make network-up" \
             sudo "${self}" --config "${CONFIG_FILE}" --set USE_TAP_NETWORK=1 network up
         printf '\n'
-        _wiz_warn "Ricorda di aggiungere le regole NAT sopra se vuoi accesso internet durante l'install."
-        printf '\n  %s→ Premi INVIO quando sei pronto (o subito se hai già il NAT attivo)... %s' "${_W_YELLOW}" "${_W_RESET}"
-        read -r
-        printf '\n'
+        _wiz_warn "${t_s6_nat_warn}"
+        _wiz_pause "${t_s6_nat_ready}"
     fi
 
-    # ── 7. Dischi ─────────────────────────────────────────────────────────────
-    _wiz_step "Creazione dischi VM" \
-        "Per ogni nodo creo 4 dischi qcow2 in artifacts/disks/:\n  · a1 + a2  (20 GB ciascuno) → sda + sdb  — root ZFS mirror (rpool)\n  · b1 + b2  (40 GB ciascuno) → sdc + sdd  — pool VM ZFS (${DATA_ZPOOL_NAME})"
-    _wiz_pause
-    _wiz_run "vm create" "make create" create_disks
+    # ── 7. Disks ──────────────────────────────────────────────────────────────
+    _wiz_step "${t_s7_title}" "${t_s7_desc}"
+    _wiz_pause "${t_continue}"
+    _wiz_run "${t_s7_title}" "make create" create_disks
 
     # ── 8. Install ────────────────────────────────────────────────────────────
-    _wiz_step "Installazione unattended (sequenziale)" \
-        "Ogni VM si avvia dall'ISO unattended e installa Proxmox su ZFS mirror.\n  QEMU esce automaticamente al riavvio che segnala il termine dell'install.\n  Durata stimata: 15–30 minuti per nodo (dipende da I/O e CPU).\n\n  Monitora il progresso in un altro terminale:\n    watch -n 10 'ls -lh artifacts/disks/pve0*a1.qcow2'"
-    _wiz_pause
-    _wiz_run "install serial" "make install-serial" install_all_headless_serial
+    _wiz_step "${t_s8_title}" "${t_s8_desc}"
+    _wiz_pause "${t_continue}"
+    _wiz_run "${t_s8_title}" "make install-serial" install_all_headless_serial
 
     # ── 9. Boot ───────────────────────────────────────────────────────────────
-    _wiz_step "Boot dei nodi installati" \
-        "I nodi si avviano dal disco in modalità headless (background).\n  Il log seriale è in artifacts/logs/pve0N-serial.log.\n  Aspetto che SSH sia disponibile su tutti i nodi prima di continuare."
-    _wiz_pause
-    _wiz_run "boot headless" "make boot-headless" boot_all_headless
+    _wiz_step "${t_s9_title}" "${t_s9_desc}"
+    _wiz_pause "${t_continue}"
+    _wiz_run "${t_s9_title}" "make boot-headless" boot_all_headless
     printf '\n'
     local idx
     for ((idx = 1; idx <= NUM_VMS; idx++)); do
         _wiz_wait_ssh "$(node_address "${idx}")"
     done
 
-    # ── 10. SSH host→nodi ─────────────────────────────────────────────────────
-    _wiz_step "Configurazione accesso SSH host → nodi" \
-        "Il bootstrap ha bisogno di SSH passwordless dall'host verso i nodi.\n  Userò ssh-copy-id per copiare la chiave pubblica dell'host su ogni nodo.\n  Ti verrà chiesta la password root (${AUTO_ROOT_PASSWORD}) una volta per nodo."
-    _wiz_pause
+    # ── 10. SSH setup ─────────────────────────────────────────────────────────
+    _wiz_step "${t_s10_title}" "${t_s10_desc}"
+    _wiz_pause "${t_continue}"
     if [[ ! -f "${HOME}/.ssh/id_ed25519.pub" && ! -f "${HOME}/.ssh/id_rsa.pub" ]]; then
-        _wiz_run "genera chiave SSH host" \
+        _wiz_run "${t_s10_keygen}" \
             "ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519" \
             ssh-keygen -t ed25519 -N '' -f "${HOME}/.ssh/id_ed25519" -q
     fi
     for ((idx = 1; idx <= NUM_VMS; idx++)); do
         local node_addr
         node_addr="$(node_address "${idx}")"
-        _wiz_run "copia chiave SSH su nodo ${idx}" \
+        _wiz_run "${t_s10_copy} ${idx}" \
             "ssh-copy-id root@${node_addr}" \
             ssh-copy-id -o StrictHostKeyChecking=accept-new "root@${node_addr}"
     done
 
-    # ── 11. Bootstrap cluster ─────────────────────────────────────────────────
-    _wiz_step "Bootstrap cluster" \
-        "Genero il bootstrap script ed eseguo automaticamente:\n  1. Scambio chiavi SSH tra i nodi (per pvecm add -use_ssh 1)\n  2. pvecm create ${CLUSTER_NAME}  su pve01\n  3. zpool create ${DATA_ZPOOL_NAME}  su ogni nodo (con percorsi by-id stabili)\n  4. Registrazione storage vmdata in Proxmox\n  5. pvecm add  su pve02…pve0${NUM_VMS}"
-    _wiz_pause
+    # ── 11. Bootstrap ─────────────────────────────────────────────────────────
+    _wiz_step "${t_s11_title}" "${t_s11_desc}"
+    _wiz_pause "${t_continue}"
     _wiz_run "cluster scaffold" "make cluster-scaffold" cluster_scaffold
-    _wiz_run "bootstrap cluster" "bash artifacts/bootstrap/bootstrap-cluster.sh" \
+    _wiz_run "bootstrap" "bash artifacts/bootstrap/bootstrap-cluster.sh" \
         bash "${BOOTSTRAP_DIR}/bootstrap-cluster.sh"
 
-    # ── Completato ────────────────────────────────────────────────────────────
+    # ── Done ──────────────────────────────────────────────────────────────────
     printf '\n%s' "${_W_BOLD}${_W_GREEN}"
     printf '╔══════════════════════════════════════════════════════╗\n'
-    printf '║   ✓  Lab Proxmox VE pronto!                         ║\n'
+    printf "║   %-51s║\n" "${t_fin_title}"
     printf '╚══════════════════════════════════════════════════════╝\n'
     printf '%s\n' "${_W_RESET}"
-    printf 'Accedi alla UI web:\n\n'
+    printf '%s\n\n' "${t_fin_access}"
     for ((idx = 1; idx <= NUM_VMS; idx++)); do
-        printf '  %sNodo %d%s  https://%s:8006\n' \
-            "${_W_BOLD}" "${idx}" "${_W_RESET}" "$(node_address "${idx}")"
+        printf '  %s%s%s  https://%s:8006\n' \
+            "${_W_BOLD}" "${t_fin_node/\%d/${idx}}" "${_W_RESET}" "$(node_address "${idx}")"
     done
     printf '\n'
-    printf '  Utente:    %sroot%s\n'     "${_W_BOLD}" "${_W_RESET}"
-    printf '  Password:  %s%s%s\n\n'    "${_W_BOLD}" "${AUTO_ROOT_PASSWORD}" "${_W_RESET}"
-    printf 'Verifica cluster:\n'
-    printf '  ssh root@%s pvecm status\n'  "$(node_address 1)"
-    printf '  ssh root@%s zpool list\n'    "$(node_address 1)"
+    printf "  %-10s %s%s%s\n" "${t_fin_user}:" "${_W_BOLD}" "root" "${_W_RESET}"
+    printf "  %-10s %s%s%s\n\n" "${t_fin_pw}:" "${_W_BOLD}" "${AUTO_ROOT_PASSWORD}" "${_W_RESET}"
+    printf '%s\n' "${t_fin_verify}"
+    printf '  ssh root@%s pvecm status\n'   "$(node_address 1)"
+    printf '  ssh root@%s zpool list\n'     "$(node_address 1)"
     printf '  ssh root@%s pvesm status\n\n' "$(node_address 1)"
-    printf 'Per spegnere il lab:\n'
+    printf '%s\n' "${t_fin_stop}"
     printf '  make stop\n'
     [[ "${USE_TAP_NETWORK}" == "1" ]] && printf '  sudo make network-down\n'
     printf '\n'
@@ -1811,7 +1922,7 @@ main() {
     case "${command}" in
         menu) menu ;;
         tui) tui ;;
-        wizard) wizard ;;
+        wizard) wizard "${1:-en}" ;;
         init) init_workspace ;;
         status) status ;;
         iso)

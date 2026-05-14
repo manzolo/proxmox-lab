@@ -10,7 +10,8 @@ help:
 		'Targets:' \
 		'  make init                  create config and artifact directories' \
 		'  make status                show lab status' \
-		'  make wizard                guided end-to-end setup (clean → cluster, step by step)' \
+		'  make wizard                guided end-to-end setup in English (default)' \
+		'  make wizard WIZARD_LANG=it  same wizard in Italian' \
 		'  make tui                   open the interactive TUI' \
 		'  make iso-latest            download latest Proxmox VE ISO' \
 		'  make iso-configured        download PROXMOX_ISO_VERSION from config' \
@@ -40,8 +41,10 @@ init:
 status:
 	$(CLI) --config $(CONFIG) status
 
+WIZARD_LANG ?= en
+
 wizard:
-	$(CLI) --config $(CONFIG) wizard
+	$(CLI) --config $(CONFIG) wizard $(WIZARD_LANG)
 
 tui:
 	$(CLI) --config $(CONFIG) tui
