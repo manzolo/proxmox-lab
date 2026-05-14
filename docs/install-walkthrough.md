@@ -95,23 +95,43 @@ Crea 4 dischi qcow2 per ogni nodo sotto `artifacts/disks/`:
 > Saltare questo passo se si vuole solo testare l'install singolo in modalità user-network.
 > Il cluster richiede TAP perché i nodi devono raggiungersi via IP.
 
-```bash
-# Assicurarsi che in config.env sia impostato:
-# USE_TAP_NETWORK=1
-# BRIDGE_NAME=pvlab-br0
-# TAP_PREFIX=pvlab-tap
+Per IP statici (consigliato, nessun DHCP server necessario), assicurarsi che `config.env` contenga:
 
+```bash
+USE_TAP_NETWORK=1
+AUTOINSTALL_PROFILE=zfs-mirror-static
+BRIDGE_ADDRESS=192.168.100.1/24
+NODE_FIRST_IP=192.168.100.101
+NODE_PREFIX_LEN=24
+NODE_GATEWAY=192.168.100.1
+NODE_DNS=1.1.1.1
+```
+
+```bash
 sudo make network-up
 ```
 
-Crea il bridge `pvlab-br0` e i TAP `pvlab-tap1`, `pvlab-tap2`, `pvlab-tap3`.
+Crea il bridge, i TAP e assegna `BRIDGE_ADDRESS` al bridge.
 
 Per verificare:
 
 ```bash
-ip link show pvlab-br0
-ip link show pvlab-tap1
+ip addr show pvlab-br0   # deve mostrare 192.168.100.1/24
 ```
+
+### NAT per accesso internet durante l'install
+
+L'installer automatico di Proxmox configura la rete e contatta NTP/DNS. Senza una rotta verso internet l'install si completa comunque, ma aggiungere il NAT evita ritardi:
+
+```bash
+# Trovare l'interfaccia di uscita: ip route get 8.8.8.8
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o <iface> -j MASQUERADE
+sudo iptables -A FORWARD -i <bridge> -j ACCEPT
+sudo iptables -A FORWARD -o <bridge> -j ACCEPT
+```
+
+Sostituire `<iface>` con l'interfaccia di uscita (es. `eth0`, `tun0`) e `<bridge>` con `BRIDGE_NAME`.
 
 ## 6. Installazione unattended
 

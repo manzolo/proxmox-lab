@@ -64,7 +64,11 @@ BRIDGE_ADDRESS=192.168.100.1/24  # assigned to host bridge by network-up
 
 `make autoinstall-scaffold` bakes a static IP into each node's answer file at ISO build time. `sudo make network-up` assigns `BRIDGE_ADDRESS` to the bridge so the host can reach all nodes. No external DHCP server required.
 
-To reach nodes by hostname from the host, add entries to `/etc/hosts` (optional — you can always use IPs directly):
+**How the filter works**: the answer file uses `filter.ID_NET_NAME_MAC = "enx<mac-without-colons>"` to identify the interface — e.g. `enx525400ac1101` for node 1 (MAC `52:54:00:ac:11:01`). This is the udev `ID_NET_NAME_MAC` property, which all virtio-net devices in QEMU q35 machines expose. `autoinstall-scaffold` computes it automatically per node.
+
+**Internet access during install**: the Proxmox automated installer configures the network early and may contact NTP/DNS. If your bridge has no internet route, add NAT before running the install (see [Firewall / iptables](#firewall--iptables) below).
+
+To reach nodes by hostname, add entries to `/etc/hosts` (optional — IPs work everywhere):
 
 ```
 192.168.100.101  pvelab1.lab.local  pvelab1
@@ -72,7 +76,7 @@ To reach nodes by hostname from the host, add entries to `/etc/hosts` (optional 
 192.168.100.103  pvelab3.lab.local  pvelab3
 ```
 
-If you skip this, use IPs everywhere: `ssh root@192.168.100.101`, `FIRST_NODE_FQDN=192.168.100.101 bash artifacts/bootstrap/bootstrap-cluster.sh`, etc.
+If you skip `/etc/hosts`: `ssh root@192.168.100.101`, `FIRST_NODE_FQDN=192.168.100.101 bash artifacts/bootstrap/bootstrap-cluster.sh`.
 
 ### DHCP
 
@@ -82,12 +86,14 @@ With `AUTOINSTALL_PROFILE=zfs-mirror` (the default), each node requests an addre
 
 ## Firewall / iptables
 
-`network-up` does not set up masquerading or forwarding rules. Add them manually if you want the lab nodes to reach the internet:
+`network-up` does not set up masquerading or forwarding rules. Add them manually if you want the lab nodes to reach the internet (required for the Proxmox automated installer with static IPs):
 
 ```bash
-# example — adjust interface names
-sysctl -w net.ipv4.ip_forward=1
-iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o eth0 -j MASQUERADE
-iptables -A FORWARD -i pvlab-br0 -j ACCEPT
-iptables -A FORWARD -o pvlab-br0 -j ACCEPT
+# Find your outbound interface: ip route get 8.8.8.8
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o eth0 -j MASQUERADE
+sudo iptables -A FORWARD -i manzolo-br0 -j ACCEPT
+sudo iptables -A FORWARD -o manzolo-br0 -j ACCEPT
 ```
+
+Replace `eth0` with your outbound interface (e.g. `tun0` for VPN, `eno1` for wired). These rules are not persistent across reboots — reapply after each host restart or use `iptables-persistent`.
