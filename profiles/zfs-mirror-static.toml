@@ -5,6 +5,7 @@
 #   NODE_GATEWAY=192.168.100.1
 #   NODE_DNS=1.1.1.1
 #   BRIDGE_ADDRESS=192.168.100.1/24  # assigned to the host bridge by network-up
+# NODE_MAC is derived automatically from the deterministic MAC (52:54:00:ac:11:NN).
 
 [global]
 keyboard = "en-us"
@@ -16,11 +17,10 @@ root-password = "{{ROOT_PASSWORD}}"
 
 [network]
 source = "from-answer"
-
-[network.if-defaults]
-ip = "{{NODE_IP}}/{{NODE_PREFIX_LEN}}"
+cidr = "{{NODE_IP}}/{{NODE_PREFIX_LEN}}"
 gateway = "{{NODE_GATEWAY}}"
 dns = "{{NODE_DNS}}"
+filter.ID_NET_NAME_MAC = "{{NODE_MAC_UDEV}}"
 
 [disk-setup]
 filesystem = "zfs"

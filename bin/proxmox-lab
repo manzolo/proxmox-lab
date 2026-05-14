@@ -1158,6 +1158,9 @@ autoinstall_scaffold() {
             ip_last="${NODE_FIRST_IP##*.}"
             node_ip="${ip_base}.$((ip_last + index - 1))"
         fi
+        local node_mac node_mac_udev
+        node_mac="$(printf '52:54:00:ac:11:%02x' "${index}")"
+        node_mac_udev="$(printf 'enx525400ac11%02x' "${index}")"
         sed \
             -e "s/{{FQDN}}/${fqdn}/g" \
             -e "s/{{ROOT_PASSWORD}}/${AUTO_ROOT_PASSWORD}/g" \
@@ -1166,6 +1169,8 @@ autoinstall_scaffold() {
             -e "s/{{NODE_PREFIX_LEN}}/${NODE_PREFIX_LEN}/g" \
             -e "s/{{NODE_GATEWAY}}/${NODE_GATEWAY}/g" \
             -e "s/{{NODE_DNS}}/${NODE_DNS}/g" \
+            -e "s/{{NODE_MAC}}/${node_mac}/g" \
+            -e "s/{{NODE_MAC_UDEV}}/${node_mac_udev}/g" \
             "${source_template}" > "${output}"
         log "created ${output}"
     }
