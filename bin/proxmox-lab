@@ -206,6 +206,18 @@ node_fqdn() {
     printf '%s.%s' "$(node_hostname "${index}")" "${AUTO_DOMAIN}"
 }
 
+node_address() {
+    local index="$1"
+    if [[ -n "${NODE_FIRST_IP}" ]]; then
+        local ip_base ip_last
+        ip_base="${NODE_FIRST_IP%.*}"
+        ip_last="${NODE_FIRST_IP##*.}"
+        printf '%s' "${ip_base}.$((ip_last + index - 1))"
+    else
+        node_fqdn "${index}"
+    fi
+}
+
 vm_mac() {
     local index="$1"
     printf '52:54:00:ac:11:%02x' "${index}"
@@ -1280,7 +1292,7 @@ cluster_scaffold() {
     local bootstrap_script="${BOOTSTRAP_DIR}/bootstrap-cluster.sh"
     local readme_path="${BOOTSTRAP_DIR}/README.md"
     local first_fqdn
-    first_fqdn="$(node_fqdn 1)"
+    first_fqdn="$(node_address 1)"
 
     cat > "${bootstrap_script}" <<EOF
 #!/usr/bin/env bash
@@ -1298,7 +1310,7 @@ NODE_FQDNS=(
 EOF
     local index
     for ((index = 1; index <= NUM_VMS; index++)); do
-        printf '  "%s"\n' "$(node_fqdn "${index}")" >> "${bootstrap_script}"
+        printf '  "%s"\n' "$(node_address "${index}")" >> "${bootstrap_script}"
     done
     cat >> "${bootstrap_script}" <<'EOF'
 )
@@ -1320,7 +1332,16 @@ DATA_STORAGE_CONTENT="${DATA_STORAGE_CONTENT}"
 read -r -a pool_devs <<<"${DATA_ZPOOL_DEVICES}"
 
 if ! zpool list -H -o name "${DATA_ZPOOL_NAME}" >/dev/null 2>&1; then
-    zpool create -f "${DATA_ZPOOL_NAME}" mirror "/dev/${pool_devs[0]}" "/dev/${pool_devs[1]}"
+    # Prefer stable by-id paths (QEMU disks carry b1/b2 suffix in their SCSI ID).
+    # Fall back to the raw device names from DATA_ZPOOL_DEVICES when not found.
+    b1_dev=$(ls /dev/disk/by-id/scsi-*_b1 2>/dev/null | head -1)
+    b2_dev=$(ls /dev/disk/by-id/scsi-*_b2 2>/dev/null | head -1)
+    if [[ -n "${b1_dev}" && -n "${b2_dev}" ]]; then
+        pool_devs=("${b1_dev}" "${b2_dev}")
+    else
+        pool_devs=("/dev/${pool_devs[0]}" "/dev/${pool_devs[1]}")
+    fi
+    zpool create -f "${DATA_ZPOOL_NAME}" mirror "${pool_devs[0]}" "${pool_devs[1]}"
 fi
 
 if ! pvesm status --storage "${DATA_STORAGE_ID}" >/dev/null 2>&1; then
