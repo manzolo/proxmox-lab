@@ -41,6 +41,8 @@ make create
 make start
 make stop
 make clean-all
+make autoinstall-scaffold
+make autoinstall-validate
 ```
 
 For TAP networking, first set `INTERFACE_NAME` in `config.env`, then run:
@@ -67,7 +69,14 @@ Copy `config.env.example` to `config.env` and adjust:
 If the official endpoint presents a certificate mismatch, the tool automatically retries the configured CDN fallback hosts before failing.
 
 ## Automated install
-The repo includes a scaffold for `answer.toml` and supports `proxmox-auto-install-assistant prepare-iso` if that tool is installed on the host.
+The repo includes a scaffold for `answer.toml` and supports `proxmox-auto-install-assistant` if that tool is installed on the host.
+
+Typical flow:
+```bash
+make autoinstall-scaffold
+make autoinstall-validate
+./bin/proxmox-lab autoinstall prepare-iso artifacts/iso/current.iso artifacts/autoinstall/answer.toml
+```
 
 Useful references:
 - https://pve.proxmox.com/wiki/Automated_Installation

@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 CLI := ./bin/proxmox-lab
 CONFIG ?= ./config.env
 
-.PHONY: help init status tui iso-latest iso-configured create start stop network-up network-down clean clean-all autoinstall-scaffold lint
+.PHONY: help init status tui iso-latest iso-configured create start stop network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate lint
 
 help:
 	@printf '%s\n' \
@@ -21,6 +21,7 @@ help:
 		'  make clean                 remove disk artifacts' \
 		'  make clean-all             remove logs, pid files, disks' \
 		'  make autoinstall-scaffold  create artifacts/autoinstall/answer.toml' \
+		'  make autoinstall-validate  validate artifacts/autoinstall/answer.toml' \
 		'  make lint                  run shellcheck when available'
 
 init:
@@ -61,6 +62,9 @@ clean-all:
 
 autoinstall-scaffold:
 	$(CLI) --config $(CONFIG) autoinstall scaffold
+
+autoinstall-validate:
+	$(CLI) --config $(CONFIG) autoinstall validate
 
 lint:
 	@if command -v shellcheck >/dev/null 2>&1; then \

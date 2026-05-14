@@ -70,6 +70,7 @@ Usage:
   proxmox-lab vm stop [all|INDEX]
   proxmox-lab clean disks|logs|run|all
   proxmox-lab autoinstall scaffold
+  proxmox-lab autoinstall validate [ANSWER_FILE]
   proxmox-lab autoinstall prepare-iso SOURCE_ISO [ANSWER_FILE]
 
 Global options:
@@ -225,6 +226,29 @@ latest_iso_filename() {
     die "failed to query any Proxmox ISO index"
 }
 
+iso_filename_for_selector() {
+    local selector="${1:-latest}"
+
+    if [[ "${selector}" =~ ^https?:// ]]; then
+        printf '%s\n' "${selector##*/}"
+    elif [[ "${selector}" == "latest" ]]; then
+        latest_iso_filename
+    elif [[ "${selector}" == "configured" ]]; then
+        printf 'proxmox-ve_%s.iso\n' "${PROXMOX_ISO_VERSION}"
+    else
+        printf 'proxmox-ve_%s.iso\n' "${selector}"
+    fi
+}
+
+iso_target_path() {
+    local selector="${1:-latest}"
+    local filename
+
+    filename="$(iso_filename_for_selector "${selector}")"
+    [[ -n "${filename}" ]] || die "could not determine target ISO filename"
+    printf '%s/%s\n' "${ISO_DIR}" "${filename}"
+}
+
 iso_fetch() {
     ensure_dirs
 
@@ -232,20 +256,8 @@ iso_fetch() {
     local filename url target base_url
     local tmp_output
 
-    if [[ "${selector}" =~ ^https?:// ]]; then
-        url="${selector}"
-        filename="${url##*/}"
-    elif [[ "${selector}" == "latest" ]]; then
-        filename="$(latest_iso_filename)"
-        [[ -n "${filename}" ]] || die "could not determine latest Proxmox VE ISO"
-        url="${ISO_URL_INDEX%/}/${filename}"
-    elif [[ "${selector}" == "configured" ]]; then
-        filename="proxmox-ve_${PROXMOX_ISO_VERSION}.iso"
-        url="${ISO_URL_INDEX%/}/${filename}"
-    else
-        filename="proxmox-ve_${selector}.iso"
-        url="${ISO_URL_INDEX%/}/${filename}"
-    fi
+    filename="$(iso_filename_for_selector "${selector}")"
+    [[ -n "${filename}" ]] || die "could not determine latest Proxmox VE ISO"
 
     target="${ISO_DIR}/${filename}"
     require_command curl
@@ -528,6 +540,16 @@ press_enter() {
     read -r -p "Press Enter to continue..." _
 }
 
+tui_capture() {
+    local output_file="$1"
+    shift
+
+    if ( "$@" ) >"${output_file}" 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
 tui_run() {
     if ( "$@" ); then
         :
@@ -535,6 +557,143 @@ tui_run() {
         warn "command failed: $*"
     fi
     press_enter
+}
+
+dialog_bin() {
+    if command -v dialog >/dev/null 2>&1; then
+        printf '%s\n' "dialog"
+        return 0
+    fi
+    if command -v whiptail >/dev/null 2>&1; then
+        printf '%s\n' "whiptail"
+        return 0
+    fi
+    return 1
+}
+
+dialog_title() {
+    printf 'Proxmox Lab'
+}
+
+dialog_backtitle() {
+    printf 'Config: %s | Mode: %s' "${CONFIG_FILE}" "$([[ "${USE_TAP_NETWORK}" -eq 1 ]] && printf 'tap' || printf 'user')"
+}
+
+dialog_show_text() {
+    local title="$1"
+    local file="$2"
+    local ui
+
+    ui="$(dialog_bin)" || return 1
+    if [[ "${ui}" == "dialog" ]]; then
+        dialog --backtitle "$(dialog_backtitle)" --title "${title}" --textbox "${file}" 22 90
+    else
+        whiptail --backtitle "$(dialog_backtitle)" --title "${title}" --scrolltext --textbox "${file}" 22 90
+    fi
+}
+
+dialog_run() {
+    local title="$1"
+    shift
+
+    local output_file status_file status
+    output_file="$(mktemp)"
+    status_file="$(mktemp)"
+
+    if tui_capture "${output_file}" "$@"; then
+        printf '0' >"${status_file}"
+    else
+        printf '%s' "$?" >"${status_file}"
+    fi
+
+    status="$(cat "${status_file}")"
+    if [[ "${status}" == "0" ]]; then
+        printf '[proxmox-lab] command succeeded: %s\n\n' "$*" >>"${output_file}"
+    else
+        printf '\n[proxmox-lab] command failed (%s): %s\n' "${status}" "$*" >>"${output_file}"
+    fi
+
+    dialog_show_text "${title}" "${output_file}" || true
+    rm -f "${output_file}" "${status_file}"
+}
+
+iso_file_summary() {
+    local target="$1"
+    local size mtime
+
+    size="$(stat -c '%s' "${target}" 2>/dev/null || printf '?')"
+    mtime="$(stat -c '%y' "${target}" 2>/dev/null | cut -d'.' -f1 || printf '?')"
+    printf 'Path: %s\nSize: %s bytes\nModified: %s' "${target}" "${size}" "${mtime}"
+}
+
+confirm_iso_refetch_basic() {
+    local target="$1"
+    local answer
+
+    printf 'ISO already present:\n%s\n' "$(iso_file_summary "${target}")"
+    read -r -p "Re-download it? [y/N] " answer
+    [[ "${answer}" =~ ^[Yy]([Ee][Ss])?$ ]]
+}
+
+confirm_iso_refetch_dialog() {
+    local target="$1"
+    local ui
+
+    ui="$(dialog_bin)" || return 1
+    if [[ "${ui}" == "dialog" ]]; then
+        dialog \
+            --defaultno \
+            --backtitle "$(dialog_backtitle)" \
+            --title "ISO Already Present" \
+            --yesno "The ISO is already present:\n\n$(iso_file_summary "${target}")\n\nRe-download it?" 15 80
+    else
+        whiptail \
+            --defaultno \
+            --backtitle "$(dialog_backtitle)" \
+            --title "ISO Already Present" \
+            --yesno "The ISO is already present:\n\n$(iso_file_summary "${target}")\n\nRe-download it?" 15 80
+    fi
+}
+
+maybe_fetch_iso_basic() {
+    local selector="$1"
+    local target
+
+    if [[ "${selector}" == "latest" ]] && target="$(resolve_iso_path 2>/dev/null)"; then
+        :
+    else
+        target="$(iso_target_path "${selector}")"
+    fi
+
+    if [[ -f "${target}" ]]; then
+        if ! confirm_iso_refetch_basic "${target}"; then
+            log "keeping existing ISO ${target}"
+            press_enter
+            return 0
+        fi
+    fi
+
+    tui_run iso_fetch "${selector}"
+}
+
+maybe_fetch_iso_dialog() {
+    local selector="$1"
+    local title="$2"
+    local target
+
+    if [[ "${selector}" == "latest" ]] && target="$(resolve_iso_path 2>/dev/null)"; then
+        :
+    else
+        target="$(iso_target_path "${selector}")"
+    fi
+
+    if [[ -f "${target}" ]]; then
+        if ! confirm_iso_refetch_dialog "${target}"; then
+            return 0
+        fi
+    fi
+
+    dialog_run "${title}" iso_fetch "${selector}"
 }
 
 tui_draw_header() {
@@ -545,7 +704,7 @@ tui_draw_header() {
     printf 'Mode: %s\n\n' "$([[ "${USE_TAP_NETWORK}" -eq 1 ]] && printf 'tap' || printf 'user')"
 }
 
-tui() {
+tui_basic() {
     local choice iso_path
 
     while true; do
@@ -567,8 +726,9 @@ tui() {
 8. Network up
 9. Network down
 10. Autoinstall scaffold
-11. Clean disks
-12. Clean all
+11. Autoinstall validate
+12. Clean disks
+13. Clean all
 q. Quit
 EOF
         printf '\nSelect: '
@@ -577,20 +737,105 @@ EOF
         case "${choice}" in
             1) tui_run status ;;
             2) tui_run init_workspace ;;
-            3) tui_run iso_fetch latest ;;
-            4) tui_run iso_fetch configured ;;
+            3) maybe_fetch_iso_basic latest ;;
+            4) maybe_fetch_iso_basic configured ;;
             5) tui_run create_disks ;;
             6) tui_run start_all ;;
             7) tui_run stop_all ;;
             8) tui_run network_up ;;
             9) tui_run network_down ;;
             10) tui_run autoinstall_scaffold ;;
-            11) tui_run clean_disks ;;
-            12) tui_run clean_all ;;
+            11) tui_run autoinstall_validate ;;
+            12) tui_run clean_disks ;;
+            13) tui_run clean_all ;;
             q|Q) break ;;
             *) warn "invalid choice"; press_enter ;;
         esac
     done
+}
+
+dialog_menu_loop() {
+    local ui choice status iso_path
+    ui="$(dialog_bin)" || return 1
+
+    while true; do
+        iso_path="$(resolve_iso_path 2>/dev/null || printf 'missing')"
+
+        if [[ "${ui}" == "dialog" ]]; then
+            choice="$(
+                dialog \
+                    --clear \
+                    --stdout \
+                    --backtitle "$(dialog_backtitle)" \
+                    --title "$(dialog_title)" \
+                    --menu "ISO: ${iso_path}" 22 90 13 \
+                    1 "Status" \
+                    2 "Init workspace" \
+                    3 "Fetch latest ISO" \
+                    4 "Fetch configured ISO" \
+                    5 "Create disks" \
+                    6 "Start all VMs" \
+                    7 "Stop all VMs" \
+                    8 "Network up" \
+                    9 "Network down" \
+                    10 "Autoinstall scaffold" \
+                    11 "Autoinstall validate" \
+                    12 "Clean disks" \
+                    13 "Clean all"
+            )"
+            status="$?"
+        else
+            choice="$(
+                whiptail \
+                    --title "$(dialog_title)" \
+                    --backtitle "$(dialog_backtitle)" \
+                    --menu "ISO: ${iso_path}" 22 90 13 \
+                    "1" "Status" \
+                    "2" "Init workspace" \
+                    "3" "Fetch latest ISO" \
+                    "4" "Fetch configured ISO" \
+                    "5" "Create disks" \
+                    "6" "Start all VMs" \
+                    "7" "Stop all VMs" \
+                    "8" "Network up" \
+                    "9" "Network down" \
+                    "10" "Autoinstall scaffold" \
+                    "11" "Autoinstall validate" \
+                    "12" "Clean disks" \
+                    "13" "Clean all" \
+                    3>&1 1>&2 2>&3
+            )"
+            status="$?"
+        fi
+
+        [[ "${status}" -eq 0 ]] || break
+
+        case "${choice}" in
+            1) dialog_run "Status" status ;;
+            2) dialog_run "Init Workspace" init_workspace ;;
+            3) maybe_fetch_iso_dialog latest "Fetch Latest ISO" ;;
+            4) maybe_fetch_iso_dialog configured "Fetch Configured ISO" ;;
+            5) dialog_run "Create Disks" create_disks ;;
+            6) dialog_run "Start All VMs" start_all ;;
+            7) dialog_run "Stop All VMs" stop_all ;;
+            8) dialog_run "Network Up" network_up ;;
+            9) dialog_run "Network Down" network_down ;;
+            10) dialog_run "Autoinstall Scaffold" autoinstall_scaffold ;;
+            11) dialog_run "Autoinstall Validate" autoinstall_validate ;;
+            12) dialog_run "Clean Disks" clean_disks ;;
+            13) dialog_run "Clean All" clean_all ;;
+        esac
+    done
+
+    clear
+}
+
+tui() {
+    if [[ -t 0 && -t 1 ]] && dialog_bin >/dev/null 2>&1; then
+        dialog_menu_loop
+    else
+        tui_basic
+    fi
 }
 
 autoinstall_scaffold() {
@@ -602,6 +847,15 @@ autoinstall_scaffold() {
     fi
     sed "s/{{FQDN}}/${fqdn}/g" "${TEMPLATE_DIR}/answer.toml.example" > "${output}"
     log "created ${output}"
+}
+
+autoinstall_validate() {
+    local answer_file="${1:-${AUTO_DIR}/answer.toml}"
+
+    require_command proxmox-auto-install-assistant
+    [[ -f "${answer_file}" ]] || die "missing answer file: ${answer_file}"
+
+    proxmox-auto-install-assistant validate-answer "${answer_file}"
 }
 
 autoinstall_prepare_iso() {
@@ -752,8 +1006,9 @@ main() {
         autoinstall)
             case "${1:-}" in
                 scaffold) autoinstall_scaffold ;;
+                validate) shift; autoinstall_validate "${1:-}" ;;
                 prepare-iso) shift; autoinstall_prepare_iso "${1:-}" "${2:-}" ;;
-                *) die "usage: proxmox-lab autoinstall scaffold|prepare-iso SOURCE_ISO [ANSWER_FILE]" ;;
+                *) die "usage: proxmox-lab autoinstall scaffold|validate [ANSWER_FILE]|prepare-iso SOURCE_ISO [ANSWER_FILE]" ;;
             esac
             ;;
         *)
