@@ -543,13 +543,23 @@ launch_vm_mode() {
 
     log "starting ${vm} (${boot_flow}, ${mode})"
     if [[ "${mode}" == "headless" ]]; then
-        "${QEMU_BIN}" "${qemu_args[@]}" >"${log_file}" 2>&1
+        local _qemu_rc=0
+        "${QEMU_BIN}" "${qemu_args[@]}" >"${log_file}" 2>&1 || _qemu_rc=$?
+        if [[ "${_qemu_rc}" -ne 0 ]]; then
+            warn "QEMU exited rc=${_qemu_rc} — ${log_file}:"
+            tail -n 20 "${log_file}" >&2 || true
+            die "QEMU launch failed for ${vm} (rc=${_qemu_rc})"
+        fi
         local tries=0
         while [[ ! -f "${pid_file}" && "${tries}" -lt 20 ]]; do
             sleep 0.1
             tries=$((tries + 1))
         done
-        [[ -f "${pid_file}" ]] || die "missing pid file after daemonized launch: ${pid_file}"
+        if [[ ! -f "${pid_file}" ]]; then
+            warn "PID file missing — last output from ${log_file}:"
+            tail -n 20 "${log_file}" >&2 || true
+            die "missing pid file after daemonized launch: ${pid_file}"
+        fi
     else
         nohup "${QEMU_BIN}" "${qemu_args[@]}" >"${log_file}" 2>&1 &
         echo $! > "${pid_file}"
@@ -593,6 +603,12 @@ stop_vm() {
     if kill -0 "${pid}" 2>/dev/null; then
         log "stopping ${vm} (${pid})"
         kill "${pid}"
+        local _tries=0
+        while kill -0 "${pid}" 2>/dev/null && [[ "${_tries}" -lt 50 ]]; do
+            sleep 0.1
+            _tries=$((_tries + 1))
+        done
+        kill -0 "${pid}" 2>/dev/null && kill -9 "${pid}" 2>/dev/null || true
     fi
     rm -f "${pid_file}"
 }
