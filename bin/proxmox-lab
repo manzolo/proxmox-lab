@@ -608,7 +608,9 @@ stop_vm() {
             sleep 0.1
             _tries=$((_tries + 1))
         done
-        kill -0 "${pid}" 2>/dev/null && kill -9 "${pid}" 2>/dev/null || true
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -9 "${pid}" 2>/dev/null || true
+        fi
     fi
     rm -f "${pid_file}"
 }
@@ -1924,7 +1926,9 @@ _kill_qemu_by_tap() {
             sleep 0.1
             _t=$((_t + 1))
         done
-        kill -0 "${pid}" 2>/dev/null && kill -9 "${pid}" 2>/dev/null || true
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -9 "${pid}" 2>/dev/null || true
+        fi
     done
 }
 
