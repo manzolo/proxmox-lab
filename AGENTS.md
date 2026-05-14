@@ -1,34 +1,61 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-This repository is a small QEMU/Proxmox lab workspace driven by Bash scripts. Top-level scripts manage VM disks and boot flow: `create.sh`, `run.sh`, and `destroy.sh`. The `tap/` directory contains the bridge/TAP-enabled variants of the same workflow. Generated VM disks such as `pve01a1.qcow2` are runtime artifacts, not source files, and should generally stay untracked. `qcowdischi.txt` is reference data only.
+## Project Structure
 
-## Build, Test, and Development Commands
-There is no build system; work is done through shell entrypoints.
+This repository is a Bash-based tooling project for building a 3-node Proxmox VE lab on QEMU. All logic lives in `bin/proxmox-lab` (a single ~1500-line Bash script). The `Makefile` wraps every subcommand. Generated runtime state (disks, ISOs, logs, pid files, bootstrap scripts) lives under `artifacts/` and is never committed.
 
-- `bash create.sh`: create the QCOW2 disks for three VMs.
-- `bash run.sh`: boot the VMs with QEMU using the local `proxmox-ve_8.1-2.iso`.
-- `bash destroy.sh`: remove generated VM disks.
-- `sudo bash tap/create.sh`: create bridge/TAP networking and the VM disks.
-- `sudo bash tap/run.sh`: start the TAP-backed VMs.
-- `sudo bash tap/destroy.sh`: tear down bridge/TAP networking and remove disks.
+- `bin/proxmox-lab` — main CLI and TUI
+- `config.env.example` — authoritative reference for all configuration variables
+- `profiles/` — TOML templates for autoinstall profiles (`zfs-mirror.toml` is the default)
+- `templates/` — base answer file template used when no profile matches
+- `tap/` — thin compatibility wrappers that delegate to `bin/proxmox-lab`
+- `artifacts/` — runtime-only: disks, ISOs, logs, pid files, bootstrap scripts
 
-Run `shellcheck *.sh tap/*.sh` before submitting changes if `shellcheck` is available.
+## Common Commands
 
-## Coding Style & Naming Conventions
-Use Bash with 4-space indentation inside loops and conditionals. Keep variable names uppercase for constants and shared settings, for example `NUM_VMS`, `VM_PREFIX`, and `TAP_PREFIX`. Prefer quoted expansions like `"$BRIDGE_NAME"` and keep filenames aligned with the existing action-oriented pattern: `create.sh`, `run.sh`, `destroy.sh`.
+```bash
+make lint                   # shellcheck on all shell scripts
+make tui                    # interactive TUI (requires dialog or whiptail)
+make init                   # create config.env and artifact directories
+make iso-configured         # download the ISO pinned in config.env
+make autoinstall-scaffold   # render per-node answer files from the active profile
+make autoinstall-validate   # validate answer files with proxmox-auto-install-assistant
+make autoinstall-prepare    # embed answer files into per-node ISOs
+make create                 # create qcow2 disks
+sudo make network-up        # create bridge + TAP interfaces (TAP mode only)
+make install-headless       # unattended install; QEMU exits when installer reboots
+make boot-headless          # boot from disk, daemonized, serial log to artifacts/logs/
+make cluster-scaffold       # generate artifacts/bootstrap/bootstrap-cluster.sh
+```
 
-## Testing Guidelines
-There is no automated test suite yet. Validate changes by running the relevant script in a controlled environment and confirming the expected side effects:
+Direct CLI usage (bypassing Make):
 
-- disk files are created or removed correctly
-- QEMU starts with the intended drives and NICs
-- TAP scripts bring `manzolo-br0` and `manzolo-tap*` up and back down cleanly
+```bash
+./bin/proxmox-lab --config ./config.env <subcommand>
+./bin/proxmox-lab --set KEY=VALUE <subcommand>   # per-invocation config override
+```
 
-Document manual verification steps in the PR when changing networking or storage behavior.
+## Coding Style
 
-## Commit & Pull Request Guidelines
-Current history uses very short subjects (`Init`), but new commits should be imperative and specific, for example `tap: fix bridge teardown loop`. Keep commits scoped to one change. PRs should include a short summary, the commands used for manual validation, any required host prerequisites such as `bridge-utils`, and screenshots only when GUI/QEMU behavior materially changed.
+- Bash with `set -euo pipefail` throughout
+- 4-space indentation inside loops and conditionals
+- `UPPER_CASE` for all config variables and constants
+- Quoted expansions everywhere: `"${VAR}"` not `$VAR`
+- New functionality goes into `bin/proxmox-lab`, not into the legacy wrapper scripts
 
-## Security & Configuration Tips
-The TAP scripts require root and modify host networking on `eno2`. Review interface names, bridge names, and ISO paths before running them on a non-lab machine.
+## Linting
+
+Run `shellcheck` before submitting changes:
+
+```bash
+shellcheck bin/proxmox-lab create.sh run.sh destroy.sh tap/create.sh tap/run.sh tap/destroy.sh
+```
+
+CI runs this automatically on every push and pull request.
+
+## Pull Request Guidelines
+
+- Imperative subject line, scoped to one change: `autoinstall: fix validate path for single-node selector`
+- Include commands used for manual verification
+- List any host prerequisites (e.g. `proxmox-auto-install-assistant`, `xorriso`, `dialog`)
+- Screenshots only when QEMU or TUI behavior visually changed

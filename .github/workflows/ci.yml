@@ -47,9 +47,99 @@ jobs:
             apt-get install -y proxmox-auto-install-assistant
             ./bin/proxmox-lab init
             ./bin/proxmox-lab iso fetch configured
-            rm -f artifacts/autoinstall/answer.toml
-            ./bin/proxmox-lab autoinstall scaffold
+            rm -f artifacts/autoinstall/*.toml artifacts/iso/pve0*-auto.iso
+            ./bin/proxmox-lab autoinstall scaffold all
             ./bin/proxmox-lab autoinstall validate
-            ./bin/proxmox-lab autoinstall prepare-iso artifacts/iso/current.iso artifacts/autoinstall/answer.toml
-            test -f artifacts/iso/proxmox-ve_9.1-1-auto.iso
+            ./bin/proxmox-lab autoinstall prepare-iso artifacts/iso/proxmox-ve_9.1-1.iso all
+            test -f artifacts/iso/pve01-auto.iso
+            test -f artifacts/iso/pve02-auto.iso
+            test -f artifacts/iso/pve03-auto.iso
           '
+
+  lab-setup-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install QEMU tools
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils
+
+      - name: Prepare CI config
+        run: |
+          cp config.env.example config.ci.env
+          cat >>config.ci.env <<'EOF'
+          VM_MEMORY_MB=2048
+          VM_CORES=2
+          VM_ACCEL=tcg,thread=multi
+          VM_CPU=max
+          EOF
+
+      - name: Build unattended media for all nodes
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace debian:trixie bash -lc '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update >/dev/null
+            apt-get install -y curl wget ca-certificates gnupg xorriso >/dev/null
+            install -d /usr/share/keyrings
+            wget -qO /usr/share/keyrings/proxmox-archive-keyring.gpg https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg
+            cat >/etc/apt/sources.list.d/pve-install-repo.sources <<EOF
+            Types: deb
+            URIs: http://download.proxmox.com/debian/pve
+            Suites: trixie
+            Components: pve-no-subscription
+            Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+            EOF
+            apt-get update >/dev/null
+            apt-get install -y proxmox-auto-install-assistant >/dev/null
+            ./bin/proxmox-lab --config ./config.ci.env init
+            ./bin/proxmox-lab --config ./config.ci.env iso fetch configured
+            rm -f artifacts/autoinstall/*.toml artifacts/iso/pve0*-auto.iso
+            ./bin/proxmox-lab --config ./config.ci.env autoinstall scaffold all
+            ./bin/proxmox-lab --config ./config.ci.env autoinstall validate all
+            ./bin/proxmox-lab --config ./config.ci.env autoinstall prepare-iso artifacts/iso/proxmox-ve_9.1-1.iso all
+          '
+
+      - name: Create disks and bootstrap assets
+        run: |
+          ./bin/proxmox-lab --config ./config.ci.env vm create
+          ./bin/proxmox-lab --config ./config.ci.env cluster scaffold
+          test -f artifacts/bootstrap/bootstrap-cluster.sh
+          bash -n artifacts/bootstrap/bootstrap-cluster.sh
+
+      - name: Smoke boot node 1
+        run: |
+          ./bin/proxmox-lab --config ./config.ci.env vm start-headless 1
+          for _ in $(seq 1 24); do
+            if grep -Eq 'Install Proxmox VE \(Automated\)|Loading Proxmox VE Automatic Installer' artifacts/logs/pve01-serial.log; then
+              break
+            fi
+            sleep 5
+          done
+          grep -Eq 'Install Proxmox VE \(Automated\)|Loading Proxmox VE Automatic Installer' artifacts/logs/pve01-serial.log
+          ./bin/proxmox-lab --config ./config.ci.env vm stop 1
+
+      - name: Smoke boot node 2
+        run: |
+          ./bin/proxmox-lab --config ./config.ci.env vm start-headless 2
+          for _ in $(seq 1 24); do
+            if grep -Eq 'Install Proxmox VE \(Automated\)|Loading Proxmox VE Automatic Installer' artifacts/logs/pve02-serial.log; then
+              break
+            fi
+            sleep 5
+          done
+          grep -Eq 'Install Proxmox VE \(Automated\)|Loading Proxmox VE Automatic Installer' artifacts/logs/pve02-serial.log
+          ./bin/proxmox-lab --config ./config.ci.env vm stop 2
+
+      - name: Smoke boot node 3
+        run: |
+          ./bin/proxmox-lab --config ./config.ci.env vm start-headless 3
+          for _ in $(seq 1 24); do
+            if grep -Eq 'Install Proxmox VE \(Automated\)|Loading Proxmox VE Automatic Installer' artifacts/logs/pve03-serial.log; then
+              break
+            fi
+            sleep 5
+          done
+          grep -Eq 'Install Proxmox VE \(Automated\)|Loading Proxmox VE Automatic Installer' artifacts/logs/pve03-serial.log
+          ./bin/proxmox-lab --config ./config.ci.env vm stop 3

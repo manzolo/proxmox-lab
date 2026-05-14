@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 CLI := ./bin/proxmox-lab
 CONFIG ?= ./config.env
 
-.PHONY: help init status tui iso-latest iso-configured create start start-headless stop vm-inspect vm-serial network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate autoinstall-prepare cluster-scaffold lint
+.PHONY: help init status tui iso-latest iso-configured create install-headless boot boot-headless start start-headless stop vm-inspect vm-serial network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate autoinstall-prepare cluster-scaffold lint
 
 help:
 	@printf '%s\n' \
@@ -14,8 +14,11 @@ help:
 		'  make iso-latest            download latest Proxmox VE ISO' \
 		'  make iso-configured        download PROXMOX_ISO_VERSION from config' \
 		'  make create                create qcow2 disks' \
-		'  make start                 start all VMs' \
-		'  make start-headless        start all VMs without a GTK window' \
+		'  make install-headless      unattended install for all VMs, exit on reboot' \
+		'  make boot                  boot all VMs from disk' \
+		'  make boot-headless         boot all VMs from disk without a GTK window' \
+		'  make start                 alias for make boot' \
+		'  make start-headless        alias for make boot-headless' \
 		'  make stop                  stop all VMs' \
 		'  make vm-inspect            inspect current VM pid/log paths' \
 		'  make vm-serial             print the latest headless serial log for VM1' \
@@ -47,11 +50,20 @@ iso-configured:
 create:
 	$(CLI) --config $(CONFIG) vm create
 
+install-headless:
+	$(CLI) --config $(CONFIG) vm install-headless
+
+boot:
+	$(CLI) --config $(CONFIG) vm boot
+
+boot-headless:
+	$(CLI) --config $(CONFIG) vm boot-headless
+
 start:
-	$(CLI) --config $(CONFIG) vm start
+	$(CLI) --config $(CONFIG) vm boot
 
 start-headless:
-	$(CLI) --config $(CONFIG) vm start-headless
+	$(CLI) --config $(CONFIG) vm boot-headless
 
 stop:
 	$(CLI) --config $(CONFIG) vm stop

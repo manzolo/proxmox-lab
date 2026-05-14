@@ -23,6 +23,7 @@ VM_PREFIX="pve0"
 VM_MEMORY_MB=4096
 VM_CORES=2
 VM_MACHINE="pc-q35-7.0"
+VM_ACCEL="kvm"
 VM_CPU="host,migratable=on"
 VM_DISPLAY="gtk"
 VM_NET_DEVICE="virtio-net-pci"
@@ -77,6 +78,9 @@ Usage:
   proxmox-lab iso fetch [latest|VERSION|URL]
   proxmox-lab network up|down|status
   proxmox-lab vm create
+  proxmox-lab vm install-headless [all|INDEX]
+  proxmox-lab vm boot [all|INDEX]
+  proxmox-lab vm boot-headless [all|INDEX]
   proxmox-lab vm start [all|INDEX]
   proxmox-lab vm start-headless [all|INDEX]
   proxmox-lab vm stop [all|INDEX]
@@ -114,7 +118,7 @@ load_config() {
         done
     fi
 
-    [[ -n "${TAP_USER}" ]] || TAP_USER="${SUDO_USER:-${USER}}"
+    [[ -n "${TAP_USER}" ]] || TAP_USER="${SUDO_USER:-${USER:-root}}"
 }
 
 require_command() {
@@ -423,16 +427,16 @@ create_disks() {
     done
 }
 
-start_vm_mode() {
+launch_vm_mode() {
     local index="$1"
-    local mode="${2:-graphical}"
+    local boot_flow="${2:-boot}"
+    local mode="${3:-graphical}"
     ensure_dirs
     require_command "${QEMU_BIN}"
 
     local iso vm pid_file log_file serial_log monitor_path
     local layout suffix netdev_arg device_arg
     local -a qemu_args
-    iso="$(resolve_vm_iso "${index}")" || die "no ISO available; run 'proxmox-lab iso fetch latest' first"
     vm="$(vm_name "${index}")"
     pid_file="$(vm_pid_path "${index}")"
     log_file="${LOGS_DIR}/${vm}.log"
@@ -447,7 +451,7 @@ start_vm_mode() {
     qemu_args=(
         -name "${vm}"
         -machine "${VM_MACHINE},usb=off,vmport=off,dump-guest-core=off"
-        -accel kvm
+        -accel "${VM_ACCEL}"
         -cpu "${VM_CPU}"
         -device virtio-scsi-pci
     )
@@ -470,22 +474,44 @@ start_vm_mode() {
 
     qemu_args+=(
         -m "${VM_MEMORY_MB}"
-        -boot once=d
-        -drive "file=${iso},media=cdrom,if=ide,index=0"
         -netdev "${netdev_arg}"
         -device "${device_arg}"
         -smp "cores=${VM_CORES}"
     )
 
+    case "${boot_flow}" in
+        install)
+            iso="$(resolve_vm_iso "${index}")" || die "no ISO available; run 'proxmox-lab iso fetch latest' first"
+            qemu_args+=(
+                -boot once=d
+                -drive "file=${iso},media=cdrom,if=ide,index=0"
+                -no-reboot
+            )
+            ;;
+        boot)
+            qemu_args+=(
+                -boot c
+            )
+            ;;
+        *)
+            die "unsupported boot flow: ${boot_flow}"
+            ;;
+    esac
+
     if [[ "${mode}" == "headless" ]]; then
         : > "${serial_log}"
         rm -f "${monitor_path}"
+        rm -f "${pid_file}"
         qemu_args+=(
             -display none
             -monitor "unix:${monitor_path},server,nowait"
             -serial "file:${serial_log}"
-            -no-shutdown
+            -daemonize
+            -pidfile "${pid_file}"
         )
+        if [[ "${boot_flow}" == "boot" ]]; then
+            qemu_args+=(-no-shutdown)
+        fi
     else
         qemu_args+=(
             -vga std
@@ -493,19 +519,41 @@ start_vm_mode() {
         )
     fi
 
-    log "starting ${vm} (${mode})"
-    nohup "${QEMU_BIN}" "${qemu_args[@]}" >"${log_file}" 2>&1 &
+    log "starting ${vm} (${boot_flow}, ${mode})"
+    if [[ "${mode}" == "headless" ]]; then
+        "${QEMU_BIN}" "${qemu_args[@]}" >"${log_file}" 2>&1
+        local tries=0
+        while [[ ! -f "${pid_file}" && "${tries}" -lt 20 ]]; do
+            sleep 0.1
+            tries=$((tries + 1))
+        done
+        [[ -f "${pid_file}" ]] || die "missing pid file after daemonized launch: ${pid_file}"
+    else
+        nohup "${QEMU_BIN}" "${qemu_args[@]}" >"${log_file}" 2>&1 &
+        echo $! > "${pid_file}"
+    fi
 
-    echo $! > "${pid_file}"
     log "${vm} pid=$(cat "${pid_file}") log=${log_file}"
 }
 
+install_vm_headless() {
+    launch_vm_mode "$1" install headless
+}
+
+boot_vm() {
+    launch_vm_mode "$1" boot graphical
+}
+
+boot_vm_headless() {
+    launch_vm_mode "$1" boot headless
+}
+
 start_vm() {
-    start_vm_mode "$1" graphical
+    boot_vm "$1"
 }
 
 start_vm_headless() {
-    start_vm_mode "$1" headless
+    boot_vm_headless "$1"
 }
 
 stop_vm() {
@@ -738,7 +786,10 @@ dialog_run_message() {
         "Fetch Latest ISO"|"Fetch Configured ISO")
             printf 'Resolving ISO source and downloading if needed.\nThis can take a while for large images.\n\nPlease wait...'
             ;;
-        "Start All VMs")
+        "Install All VMs"|"Install All VMs (Headless)")
+            printf 'Starting unattended installation.\nThe VMs will exit automatically when the installer tries to reboot.\n\nPlease wait...'
+            ;;
+        "Boot All VMs"|"Boot All VMs (Headless)")
             printf 'Starting virtual machines.\n\nPlease wait...'
             ;;
         "Network Up"|"Network Down")
@@ -893,15 +944,16 @@ tui_basic() {
 3. Fetch latest ISO
 4. Fetch configured ISO
 5. Create disks
-6. Start all VMs
-7. Stop all VMs
-8. Network up
-9. Network down
-10. Autoinstall scaffold
-11. Autoinstall validate
-12. Clean disks
-13. Clean all
-14. Exit
+6. Install all VMs
+7. Boot all VMs
+8. Stop all VMs
+9. Network up
+10. Network down
+11. Autoinstall scaffold
+12. Autoinstall validate
+13. Clean disks
+14. Clean all
+15. Exit
 q. Quit
 EOF
         printf '\nSelect: '
@@ -913,15 +965,16 @@ EOF
             3) maybe_fetch_iso_basic latest ;;
             4) maybe_fetch_iso_basic configured ;;
             5) tui_run create_disks ;;
-            6) tui_run start_all ;;
-            7) tui_run stop_all ;;
-            8) tui_run network_up ;;
-            9) tui_run network_down ;;
-            10) tui_run autoinstall_scaffold ;;
-            11) tui_run autoinstall_validate ;;
-            12) tui_run clean_disks ;;
-            13) tui_run clean_all ;;
-            14) break ;;
+            6) tui_run install_all_headless ;;
+            7) tui_run boot_all ;;
+            8) tui_run stop_all ;;
+            9) tui_run network_up ;;
+            10) tui_run network_down ;;
+            11) tui_run autoinstall_scaffold ;;
+            12) tui_run autoinstall_validate ;;
+            13) tui_run clean_disks ;;
+            14) tui_run clean_all ;;
+            15) break ;;
             q|Q) break ;;
             *) warn "invalid choice"; press_enter ;;
         esac
@@ -948,15 +1001,16 @@ dialog_menu_loop() {
                     3 "Fetch latest ISO" \
                     4 "Fetch configured ISO" \
                     5 "Create disks" \
-                    6 "Start all VMs" \
-                    7 "Stop all VMs" \
-                    8 "Network up" \
-                    9 "Network down" \
-                    10 "Autoinstall scaffold" \
-                    11 "Autoinstall validate" \
-                    12 "Clean disks" \
-                    13 "Clean all" \
-                    14 "Exit"
+                    6 "Install all VMs" \
+                    7 "Boot all VMs" \
+                    8 "Stop all VMs" \
+                    9 "Network up" \
+                    10 "Network down" \
+                    11 "Autoinstall scaffold" \
+                    12 "Autoinstall validate" \
+                    13 "Clean disks" \
+                    14 "Clean all" \
+                    15 "Exit"
             )"
             status="$?"
         else
@@ -970,15 +1024,16 @@ dialog_menu_loop() {
                     "3" "Fetch latest ISO" \
                     "4" "Fetch configured ISO" \
                     "5" "Create disks" \
-                    "6" "Start all VMs" \
-                    "7" "Stop all VMs" \
-                    "8" "Network up" \
-                    "9" "Network down" \
-                    "10" "Autoinstall scaffold" \
-                    "11" "Autoinstall validate" \
-                    "12" "Clean disks" \
-                    "13" "Clean all" \
-                    "14" "Exit" \
+                    "6" "Install all VMs" \
+                    "7" "Boot all VMs" \
+                    "8" "Stop all VMs" \
+                    "9" "Network up" \
+                    "10" "Network down" \
+                    "11" "Autoinstall scaffold" \
+                    "12" "Autoinstall validate" \
+                    "13" "Clean disks" \
+                    "14" "Clean all" \
+                    "15" "Exit" \
                     3>&1 1>&2 2>&3
             )"
             status="$?"
@@ -992,15 +1047,16 @@ dialog_menu_loop() {
             3) maybe_fetch_iso_dialog latest "Fetch Latest ISO" ;;
             4) maybe_fetch_iso_dialog configured "Fetch Configured ISO" ;;
             5) dialog_run "Create Disks" create_disks ;;
-            6) dialog_run "Start All VMs" start_all ;;
-            7) dialog_run "Stop All VMs" stop_all ;;
-            8) dialog_run "Network Up" network_up ;;
-            9) dialog_run "Network Down" network_down ;;
-            10) dialog_run "Autoinstall Scaffold" autoinstall_scaffold ;;
-            11) dialog_run "Autoinstall Validate" autoinstall_validate ;;
-            12) dialog_run "Clean Disks" clean_disks ;;
-            13) dialog_run "Clean All" clean_all ;;
-            14) break ;;
+            6) dialog_run "Install All VMs (Headless)" install_all_headless ;;
+            7) dialog_run "Boot All VMs" boot_all ;;
+            8) dialog_run "Stop All VMs" stop_all ;;
+            9) dialog_run "Network Up" network_up ;;
+            10) dialog_run "Network Down" network_down ;;
+            11) dialog_run "Autoinstall Scaffold" autoinstall_scaffold ;;
+            12) dialog_run "Autoinstall Validate" autoinstall_validate ;;
+            13) dialog_run "Clean Disks" clean_disks ;;
+            14) dialog_run "Clean All" clean_all ;;
+            15) break ;;
         esac
     done
 
@@ -1241,7 +1297,8 @@ menu() {
         "init" \
         "iso fetch latest" \
         "vm create" \
-        "vm start" \
+        "vm install-headless" \
+        "vm boot" \
         "vm stop" \
         "clean disks" \
         "clean all" \
@@ -1254,7 +1311,8 @@ menu() {
             "init") init_workspace ;;
             "iso fetch latest") iso_fetch latest ;;
             "vm create") create_disks ;;
-            "vm start") start_all ;;
+            "vm install-headless") install_all_headless ;;
+            "vm boot") boot_all ;;
             "vm stop") stop_all ;;
             "clean disks") clean_disks ;;
             "clean all") clean_all ;;
@@ -1268,16 +1326,27 @@ menu() {
 }
 
 start_all() {
+    boot_all
+}
+
+install_all_headless() {
     local index
     for ((index = 1; index <= NUM_VMS; index++)); do
-        start_vm "${index}"
+        install_vm_headless "${index}"
     done
 }
 
-start_all_headless() {
+boot_all() {
     local index
     for ((index = 1; index <= NUM_VMS; index++)); do
-        start_vm_headless "${index}"
+        boot_vm "${index}"
+    done
+}
+
+boot_all_headless() {
+    local index
+    for ((index = 1; index <= NUM_VMS; index++)); do
+        boot_vm_headless "${index}"
     done
 }
 
@@ -1344,16 +1413,34 @@ main() {
         vm)
             case "${1:-}" in
                 create) create_disks ;;
+                install-headless)
+                    case "${2:-all}" in
+                        all) install_all_headless ;;
+                        *) install_vm_headless "${2}" ;;
+                    esac
+                    ;;
+                boot)
+                    case "${2:-all}" in
+                        all) boot_all ;;
+                        *) boot_vm "${2}" ;;
+                    esac
+                    ;;
+                boot-headless)
+                    case "${2:-all}" in
+                        all) boot_all_headless ;;
+                        *) boot_vm_headless "${2}" ;;
+                    esac
+                    ;;
                 start)
                     case "${2:-all}" in
-                        all) start_all ;;
-                        *) start_vm "${2}" ;;
+                        all) boot_all ;;
+                        *) boot_vm "${2}" ;;
                     esac
                     ;;
                 start-headless)
                     case "${2:-all}" in
-                        all) start_all_headless ;;
-                        *) start_vm_headless "${2}" ;;
+                        all) boot_all_headless ;;
+                        *) boot_vm_headless "${2}" ;;
                     esac
                     ;;
                 stop)
@@ -1375,7 +1462,7 @@ main() {
                     esac
                     ;;
                 serial) serial_vm "${2:-1}" ;;
-                *) die "usage: proxmox-lab vm create|start [all|INDEX]|start-headless [all|INDEX]|stop [all|INDEX]|inspect [all|INDEX]|serial [INDEX]" ;;
+                *) die "usage: proxmox-lab vm create|install-headless [all|INDEX]|boot [all|INDEX]|boot-headless [all|INDEX]|start [all|INDEX]|start-headless [all|INDEX]|stop [all|INDEX]|inspect [all|INDEX]|serial [INDEX]" ;;
             esac
             ;;
         clean)
