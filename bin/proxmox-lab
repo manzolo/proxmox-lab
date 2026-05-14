@@ -1545,7 +1545,7 @@ wizard() {
     local t_s4_title t_s4_desc t_s4_present t_s4_run
     local t_s5_title t_s5_desc t_s6_title t_s6_desc t_s6_nat_warn t_s6_nat_ready
     local t_s7_title t_s7_desc t_s8_title t_s8_desc t_s9_title t_s9_desc
-    local t_s10_title t_s10_desc t_s10_keygen t_s10_clean t_s10_copy
+    local t_s10_title t_s10_desc t_s10_keygen t_s10_clean t_s10_copy t_s10_pw_hint
     local t_s11_title t_s11_desc
     local t_fin_title t_fin_access t_fin_node t_fin_user t_fin_pw
     local t_fin_verify t_fin_stop
@@ -1593,6 +1593,7 @@ wizard() {
         t_s10_keygen="genera chiave SSH host"
         t_s10_clean="rimuovo chiave host obsoleta da known_hosts"
         t_s10_copy="copia chiave SSH su nodo"
+        t_s10_pw_hint="quando richiesto, inserisci la password root Proxmox"
         t_s11_title="Bootstrap cluster"
         t_s11_desc="Genero il bootstrap script ed eseguo automaticamente:\n  1. Scambio chiavi SSH tra i nodi (per pvecm add -use_ssh 1)\n  2. pvecm create ${CLUSTER_NAME}  su pve01\n  3. zpool create ${DATA_ZPOOL_NAME}  su ogni nodo (con percorsi by-id stabili)\n  4. Registrazione storage vmdata in Proxmox\n  5. pvecm add  su pve02…pve0${NUM_VMS}"
         t_fin_title="✓  Lab Proxmox VE pronto!"
@@ -1644,6 +1645,7 @@ wizard() {
         t_s10_keygen="generate host SSH key"
         t_s10_clean="remove stale host key from known_hosts"
         t_s10_copy="copy SSH key to node"
+        t_s10_pw_hint="when prompted, enter the Proxmox root password"
         t_s11_title="Bootstrap cluster"
         t_s11_desc="Generating the bootstrap script and running it automatically:\n  1. SSH key exchange between nodes (for pvecm add -use_ssh 1)\n  2. pvecm create ${CLUSTER_NAME}  on pve01\n  3. zpool create ${DATA_ZPOOL_NAME}  on each node (using stable by-id paths)\n  4. Register vmdata storage in Proxmox\n  5. pvecm add  on pve02…pve0${NUM_VMS}"
         t_fin_title="✓  Proxmox VE Lab ready!"
@@ -1783,6 +1785,7 @@ wizard() {
         _wiz_run "${t_s10_clean} (${node_addr})" \
             "ssh-keygen -R ${node_addr}" \
             ssh-keygen -R "${node_addr}"
+        _wiz_warn "${t_s10_pw_hint}: ${AUTO_ROOT_PASSWORD}"
         _wiz_run "${t_s10_copy} ${idx}" \
             "ssh-copy-id root@${node_addr}" \
             ssh-copy-id -o StrictHostKeyChecking=accept-new "root@${node_addr}"
