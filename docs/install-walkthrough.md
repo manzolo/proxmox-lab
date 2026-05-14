@@ -176,9 +176,10 @@ make cluster-scaffold
 
 Il script generato esegue sul primo nodo via SSH:
 
-1. `pvecm create <CLUSTER_NAME>` su pve01
-2. `zpool create vmdata mirror /dev/sdc /dev/sdd` + registrazione storage su ogni nodo
-3. `pvecm add pvelab1.lab.local -use_ssh 1` su pve02 e pve03
+1. Scambio chiavi SSH tra i nodi: genera una chiave ed25519 su pve02 e pve03 (se assente), aggiunge le chiavi pubbliche agli `authorized_keys` di pve01 e pre-accetta il fingerprint di pve01 — necessario per `pvecm add -use_ssh 1`
+2. `pvecm create <CLUSTER_NAME>` su pve01
+3. `zpool create vmdata mirror <by-id/scsi-*_b1> <by-id/scsi-*_b2>` + registrazione storage su ogni nodo (usa percorsi stabili `by-id` per evitare problemi di enumerazione SCSI)
+4. `pvecm add pvelab1.lab.local -use_ssh 1` su pve02 e pve03
 
 Eseguire dal host (richiede SSH raggiungibile tra host e nodi, tipicamente via bridge):
 

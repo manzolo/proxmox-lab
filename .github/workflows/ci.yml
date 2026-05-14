@@ -89,6 +89,7 @@ jobs:
             ./bin/proxmox-lab --config ./config.ci.env autoinstall scaffold all
             ./bin/proxmox-lab --config ./config.ci.env autoinstall validate all
             ./bin/proxmox-lab --config ./config.ci.env autoinstall prepare-iso artifacts/iso/proxmox-ve_9.1-1.iso all
+            chmod -R a+rw /workspace/artifacts
           '
 
       - name: Create disks and bootstrap assets

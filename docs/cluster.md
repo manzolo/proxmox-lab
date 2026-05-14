@@ -14,6 +14,9 @@ Before running the bootstrap script:
 - SSH works from host to each node: `ssh root@192.168.100.101` (or by hostname
   if you added entries to `/etc/hosts` — see [networking.md](networking.md))
 
+SSH key exchange between nodes (required for `pvecm add -use_ssh 1`) is handled
+automatically by the bootstrap script — no manual key setup needed.
+
 ## Generate the bootstrap script
 
 ```bash
@@ -28,12 +31,13 @@ CLUSTER_NAME=mycluster FIRST_NODE_FQDN=pvelab1.lab.local bash artifacts/bootstra
 
 ## What the script does
 
-1. **Create cluster** on node 1: `pvecm create <CLUSTER_NAME>`
-2. **Create vmdata pool** on every node: `zpool create -f vmdata mirror /dev/sdc /dev/sdd`
-3. **Register storage** on every node: `pvesm add zfspool vmdata …`
-4. **Join cluster** on nodes 2 and 3: `pvecm add <node1_fqdn> -use_ssh 1`
+1. **SSH key exchange**: generates an ed25519 key on each joining node (if absent), adds its public key to node 1's `authorized_keys`, and pre-accepts node 1's host key — so `pvecm add -use_ssh 1` can proceed without interaction
+2. **Create cluster** on node 1: `pvecm create <CLUSTER_NAME>`
+3. **Create vmdata pool** on every node using stable `/dev/disk/by-id/scsi-*_b1` paths (avoids SCSI enumeration-order surprises), falling back to `DATA_ZPOOL_DEVICES` if by-id paths are not found
+4. **Register storage** on every node: `pvesm add zfspool vmdata …`
+5. **Join cluster** on nodes 2 and 3: `pvecm add <node1_fqdn> -use_ssh 1`
 
-SSH uses `StrictHostKeyChecking=accept-new` so first-run host key acceptance is automatic.
+SSH from the host uses `StrictHostKeyChecking=accept-new` so first-run host key acceptance is automatic.
 
 ## Verify
 

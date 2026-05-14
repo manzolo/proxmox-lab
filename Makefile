@@ -3,13 +3,14 @@ SHELL := /usr/bin/env bash
 CLI := ./bin/proxmox-lab
 CONFIG ?= ./config.env
 
-.PHONY: help init status tui iso-latest iso-configured create install-headless install-serial boot boot-headless start start-headless stop vm-inspect vm-serial network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate autoinstall-prepare cluster-scaffold lint
+.PHONY: help init status tui wizard iso-latest iso-configured create install-headless install-serial boot boot-headless start start-headless stop vm-inspect vm-serial network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate autoinstall-prepare cluster-scaffold lint
 
 help:
 	@printf '%s\n' \
 		'Targets:' \
 		'  make init                  create config and artifact directories' \
 		'  make status                show lab status' \
+		'  make wizard                guided end-to-end setup (clean → cluster, step by step)' \
 		'  make tui                   open the interactive TUI' \
 		'  make iso-latest            download latest Proxmox VE ISO' \
 		'  make iso-configured        download PROXMOX_ISO_VERSION from config' \
@@ -38,6 +39,9 @@ init:
 
 status:
 	$(CLI) --config $(CONFIG) status
+
+wizard:
+	$(CLI) --config $(CONFIG) wizard
 
 tui:
 	$(CLI) --config $(CONFIG) tui
