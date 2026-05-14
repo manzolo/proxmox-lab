@@ -1440,6 +1440,7 @@ _W_CYAN=$'\033[0;36m'
 _W_RED=$'\033[0;31m'
 _W_STEP=0
 _W_LANG=en
+_W_STEP_WORD=Step
 
 _wiz_sep() {
     printf '%s  ────────────────────────────────────────────────────%s\n' "${_W_CYAN}" "${_W_RESET}"
@@ -1448,9 +1449,13 @@ _wiz_sep() {
 _wiz_step() {
     _W_STEP=$((_W_STEP + 1))
     _wiz_sep
-    printf '%s  Passo %d — %s%s\n' "${_W_BOLD}${_W_CYAN}" "${_W_STEP}" "$1" "${_W_RESET}"
+    printf '%s  %s %d — %s%s\n' "${_W_BOLD}${_W_CYAN}" "${_W_STEP_WORD}" "${_W_STEP}" "$1" "${_W_RESET}"
     _wiz_sep
     [[ -n "${2:-}" ]] && printf '  %b\n' "$2"
+}
+
+_wiz_kv() {
+    printf '  %s·  %-14s %s%s\n' "${_W_CYAN}" "${1}:" "$2" "${_W_RESET}"
 }
 
 _wiz_pause() {
@@ -1469,8 +1474,8 @@ _wiz_run() {
         printf '  %s✓  OK%s\n' "${_W_GREEN}" "${_W_RESET}"
     else
         local rc=$?
-        printf '  %s✗  Errore (rc=%d)%s\n' "${_W_RED}" "${rc}" "${_W_RESET}"
-        die "wizard interrotto: ${label}"
+        printf '  %s✗  error (rc=%d)%s\n' "${_W_RED}" "${rc}" "${_W_RESET}"
+        die "wizard aborted: ${label}"
     fi
 }
 
@@ -1520,7 +1525,7 @@ wizard() {
     local t_net_user t_node_ips t_continue t_warn_changeme t_die_changeme
     local t_missing t_s1_title t_s1_desc t_s1_miss_qemu t_s1_miss_ip
     local t_s1_ok_docker t_s1_miss_tool
-    local t_s2_title t_s2_desc t_s3_title t_s3_desc
+    local t_s2_title t_s2_stop t_s2_desc t_s3_title t_s3_desc
     local t_s4_title t_s4_desc t_s4_present t_s4_run
     local t_s5_title t_s5_desc t_s6_title t_s6_desc t_s6_nat_warn t_s6_nat_ready
     local t_s7_title t_s7_desc t_s8_title t_s8_desc t_s9_title t_s9_desc
@@ -1531,6 +1536,7 @@ wizard() {
 
     case "${lang}" in
     it)
+        _W_STEP_WORD="Passo"
         t_subtitle="Questo wizard ti guida nella creazione di un cluster Proxmox VE\na %d nodi su QEMU/KVM con root ZFS mirror e pool VM ZFS."
         t_active_config="Configurazione attiva (%s):"
         t_nodes="Nodi";        t_profile="Profilo";    t_accel="Accel"
@@ -1546,6 +1552,7 @@ wizard() {
         t_s1_ok_docker="docker  (usato come fallback per proxmox-auto-install-assistant)"
         t_s1_miss_tool="né proxmox-auto-install-assistant né docker trovati"
         t_s2_title="Pulizia artefatti esistenti"
+        t_s2_stop="fermo le VM in esecuzione"
         t_s2_desc="Rimuovo dischi, log, pid file e ISO per-nodo precedenti.\n  L'ISO base scaricato viene mantenuto."
         t_s3_title="Inizializzazione directory"
         t_s3_desc="Creo le directory artifacts/ necessarie."
@@ -1580,6 +1587,7 @@ wizard() {
         t_fin_stop="Per spegnere il lab:"
         ;;
     *)  # en
+        _W_STEP_WORD="Step"
         t_subtitle="This wizard guides you through building a %d-node Proxmox VE\ncluster on QEMU/KVM with ZFS mirror root and VM storage pool."
         t_active_config="Active configuration (%s):"
         t_nodes="Nodes";       t_profile="Profile";    t_accel="Accel"
@@ -1595,6 +1603,7 @@ wizard() {
         t_s1_ok_docker="docker  (used as fallback for proxmox-auto-install-assistant)"
         t_s1_miss_tool="neither proxmox-auto-install-assistant nor docker found"
         t_s2_title="Clean existing artifacts"
+        t_s2_stop="stop any running VMs"
         t_s2_desc="Removing previous disks, logs, pid files, and per-node ISOs.\n  The downloaded base ISO is kept."
         t_s3_title="Initialise directories"
         t_s3_desc="Creating the artifacts/ directory structure."
@@ -1638,18 +1647,18 @@ wizard() {
     printf '%s\n' "${_W_RESET}"
     printf '%b\n\n' "${t_subtitle/\%d/${NUM_VMS}}"
     printf '%s\n' "${t_active_config/\%s/${CONFIG_FILE}}"
-    _wiz_info "${t_nodes}:             ${NUM_VMS}  (${VM_PREFIX}1 … ${VM_PREFIX}${NUM_VMS})"
-    _wiz_info "${t_profile}:          ${AUTOINSTALL_PROFILE}"
-    _wiz_info "${t_accel}:            ${VM_ACCEL}  RAM: ${VM_MEMORY_MB} MB  CPU: ${VM_CORES} core"
+    _wiz_kv "${t_nodes}" "${NUM_VMS}  (${VM_PREFIX}1 … ${VM_PREFIX}${NUM_VMS})"
+    _wiz_kv "${t_profile}" "${AUTOINSTALL_PROFILE}"
+    _wiz_kv "${t_accel}" "${VM_ACCEL}  RAM: ${VM_MEMORY_MB} MB  CPU: ${VM_CORES} core"
     if [[ "${USE_TAP_NETWORK}" == "1" ]]; then
-        _wiz_info "${t_net_tap}:             TAP bridge ${BRIDGE_NAME}  (${BRIDGE_ADDRESS:-?})"
-        [[ -n "${NODE_FIRST_IP}" ]] && _wiz_info "${t_node_ips}:          ${NODE_FIRST_IP} … +$((NUM_VMS - 1))"
+        _wiz_kv "${t_net_tap}" "TAP bridge ${BRIDGE_NAME}  (${BRIDGE_ADDRESS:-?})"
+        [[ -n "${NODE_FIRST_IP}" ]] && _wiz_kv "${t_node_ips}" "${NODE_FIRST_IP} … +$((NUM_VMS - 1))"
     else
-        _wiz_info "${t_net_user}:             user-mode QEMU NAT"
+        _wiz_kv "${t_net_user}" "user-mode QEMU NAT"
     fi
-    _wiz_info "Cluster:          ${CLUSTER_NAME}"
-    _wiz_info "${t_fin_pw}:    ${AUTO_ROOT_PASSWORD}"
-    _wiz_info "Proxmox ISO:      ${PROXMOX_ISO_VERSION}"
+    _wiz_kv "Cluster" "${CLUSTER_NAME}"
+    _wiz_kv "${t_fin_pw}" "${AUTO_ROOT_PASSWORD}"
+    _wiz_kv "Proxmox ISO" "${PROXMOX_ISO_VERSION}"
     printf '\n'
 
     if [[ "${AUTO_ROOT_PASSWORD}" == "CHANGEME" ]]; then
@@ -1691,6 +1700,7 @@ wizard() {
     # ── 2. Clean ──────────────────────────────────────────────────────────────
     _wiz_step "${t_s2_title}" "${t_s2_desc}"
     _wiz_pause "${t_continue}"
+    _wiz_run "${t_s2_stop}" "make stop" stop_all
     _wiz_run "${t_s2_title}" "make clean-all" clean_all
 
     # ── 3. Init ───────────────────────────────────────────────────────────────
