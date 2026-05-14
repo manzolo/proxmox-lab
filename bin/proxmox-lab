@@ -50,6 +50,8 @@ DATA_ZPOOL_NAME="vmdata"
 DATA_ZPOOL_DEVICES="sdc sdd"
 DATA_STORAGE_ID="vmdata"
 DATA_STORAGE_CONTENT="images,rootdir"
+USE_DOCKER_AUTOINSTALL=0
+DOCKER_AUTOINSTALL_IMAGE="debian:trixie"
 
 declare -a CONFIG_OVERRIDES=()
 
@@ -95,6 +97,7 @@ Usage:
 Global options:
   --config PATH           Use a specific config file.
   --set KEY=VALUE         Override a config value for the current invocation.
+  --docker                Force Docker for proxmox-auto-install-assistant (auto-detected when not installed).
 EOF
 }
 
@@ -1071,6 +1074,53 @@ tui() {
     fi
 }
 
+ensure_autoinstall_assistant() {
+    if [[ "${USE_DOCKER_AUTOINSTALL}" -eq 1 ]]; then
+        require_command docker
+        return 0
+    fi
+    if command -v proxmox-auto-install-assistant >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v docker >/dev/null 2>&1; then
+        log "proxmox-auto-install-assistant not found; falling back to Docker (${DOCKER_AUTOINSTALL_IMAGE})"
+        USE_DOCKER_AUTOINSTALL=1
+        return 0
+    fi
+    die "missing required command: proxmox-auto-install-assistant (install it from the Proxmox apt repo, or install Docker for automatic fallback)"
+}
+
+docker_autoinstall_run() {
+    # Re-runs the given proxmox-lab subcommand inside a Docker container with
+    # proxmox-auto-install-assistant installed. Path arguments that start with
+    # REPO_ROOT are rewritten to /workspace/... (the container mount point).
+    require_command docker
+    local -a translated=()
+    local arg
+    for arg in "$@"; do
+        translated+=("${arg//${REPO_ROOT}//workspace}")
+    done
+    log "running in Docker (${DOCKER_AUTOINSTALL_IMAGE}): ${translated[*]}"
+    docker run --rm -i \
+        -v "${REPO_ROOT}:/workspace" \
+        -w /workspace \
+        "${DOCKER_AUTOINSTALL_IMAGE}" \
+        bash -s -- "${translated[@]}" <<'PROXMOX_LAB_DOCKER'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null
+apt-get install -y -qq wget ca-certificates gnupg xorriso >/dev/null
+install -d /usr/share/keyrings
+wget -qO /usr/share/keyrings/proxmox-archive-keyring.gpg \
+    https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg >/dev/null
+printf 'Types: deb\nURIs: http://download.proxmox.com/debian/pve\nSuites: trixie\nComponents: pve-no-subscription\nSigned-By: /usr/share/keyrings/proxmox-archive-keyring.gpg\n' \
+    >/etc/apt/sources.list.d/pve-install-repo.sources
+apt-get update -qq >/dev/null
+apt-get install -y -qq proxmox-auto-install-assistant >/dev/null
+./bin/proxmox-lab "$@"
+PROXMOX_LAB_DOCKER
+}
+
 autoinstall_scaffold() {
     ensure_dirs
     local selector="${1:-all}"
@@ -1107,7 +1157,11 @@ autoinstall_scaffold() {
 }
 
 autoinstall_validate() {
-    require_command proxmox-auto-install-assistant
+    ensure_autoinstall_assistant
+    if [[ "${USE_DOCKER_AUTOINSTALL}" -eq 1 ]]; then
+        docker_autoinstall_run autoinstall validate "${1:-all}"
+        return
+    fi
     local selector="${1:-all}"
     local answer_file index
 
@@ -1132,7 +1186,19 @@ autoinstall_validate() {
 
 autoinstall_prepare_iso() {
     ensure_dirs
-    require_command proxmox-auto-install-assistant
+    ensure_autoinstall_assistant
+
+    if [[ "${USE_DOCKER_AUTOINSTALL}" -eq 1 ]]; then
+        local src="${1:-}" sel="${2:-all}"
+        docker_autoinstall_run autoinstall prepare-iso "$@"
+        # Docker creates current.iso with a container-internal path; recreate it on the host.
+        if [[ -f "${sel}" ]]; then
+            ln -sfn "${ISO_DIR}/$(basename "${src%.iso}")-auto.iso" "$(current_iso_path)"
+        elif [[ "${sel}" == "all" ]]; then
+            ln -sfn "$(node_iso_path 1)" "$(current_iso_path)"
+        fi
+        return
+    fi
 
     local source_iso="${1:-}"
     local selector="${2:-all}"
@@ -1367,6 +1433,10 @@ parse_global_options() {
             --set)
                 CONFIG_OVERRIDES+=("$2")
                 shift 2
+                ;;
+            --docker)
+                USE_DOCKER_AUTOINSTALL=1
+                shift
                 ;;
             -h|--help)
                 usage
