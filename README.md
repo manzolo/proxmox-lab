@@ -3,6 +3,9 @@
 [![CI](https://github.com/manzolo/proxmox-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/manzolo/proxmox-lab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+<img width="662" height="389" alt="immagine" src="https://github.com/user-attachments/assets/631d0b85-8780-4db0-a5d6-77ddd8beea5c" />
+
+
 Repeatable QEMU-based tooling to build a 3-node Proxmox VE lab on one host.
 
 Each node gets:
