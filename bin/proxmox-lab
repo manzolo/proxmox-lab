@@ -1598,7 +1598,7 @@ wizard() {
     local t_s1_ok_docker t_s1_miss_tool
     local t_s2_title t_s2_stop t_s2_desc t_s3_title t_s3_desc
     local t_s4_title t_s4_desc t_s4_present t_s4_run
-    local t_s5_title t_s5_desc t_s6_title t_s6_desc t_s6_nat_applied
+    local t_s5_title t_s5_desc t_s6_title t_s6_desc t_s6_sudo_reason t_s6_nat_applied
     local t_s7_title t_s7_desc t_s8_title t_s8_desc t_s9_title t_s9_desc
     local t_s10_title t_s10_desc t_s10_keygen t_s10_clean t_s10_copy t_s10_pw_hint
     local t_s11_title t_s11_desc
@@ -1635,6 +1635,7 @@ wizard() {
         t_s5_desc="Per ogni nodo creo un file di risposta TOML con hostname, IP statico, password\n  e layout disco, poi lo incorporo in una copia dell'ISO base.\n  Risultato: artifacts/iso/pve0N-auto.iso"
         t_s6_title="Rete TAP/bridge — richiede sudo"
         t_s6_desc="Creo il bridge ${BRIDGE_NAME} con IP ${BRIDGE_ADDRESS:-<BRIDGE_ADDRESS non impostato>}\n  e i TAP ${TAP_PREFIX}1…${TAP_PREFIX}${NUM_VMS}.\n  Le regole NAT/MASQUERADE vengono aggiunte automaticamente (subnet ${subnet}).\n  Rimosse automaticamente con 'sudo make network-down'."
+        t_s6_sudo_reason="sudo necessario: creare bridge Linux, interfacce TAP e regole iptables\n  richiede privilegi di rete a livello kernel — non è possibile farlo come utente normale"
         t_s6_nat_applied="NAT configurato — i nodi hanno accesso internet durante l'install"
         t_s7_title="Creazione dischi VM"
         t_s7_desc="Per ogni nodo creo 4 dischi qcow2 in artifacts/disks/:\n  · a1 + a2  (20 GB ciascuno) → sda + sdb  — root ZFS mirror (rpool)\n  · b1 + b2  (40 GB ciascuno) → sdc + sdd  — pool VM ZFS (${DATA_ZPOOL_NAME})"
@@ -1686,6 +1687,7 @@ wizard() {
         t_s5_desc="For each node, a TOML answer file is generated (hostname, static IP,\n  password, disk layout) and embedded into a copy of the base ISO.\n  Output: artifacts/iso/pve0N-auto.iso"
         t_s6_title="TAP/bridge network — requires sudo"
         t_s6_desc="Creating bridge ${BRIDGE_NAME} with IP ${BRIDGE_ADDRESS:-<BRIDGE_ADDRESS not set>}\n  and TAP interfaces ${TAP_PREFIX}1…${TAP_PREFIX}${NUM_VMS}.\n  NAT/MASQUERADE rules are added automatically (subnet ${subnet}).\n  Removed automatically by 'sudo make network-down'."
+        t_s6_sudo_reason="sudo required: creating Linux bridges, TAP interfaces and iptables rules\n  needs kernel-level network privileges — this cannot be done as a regular user"
         t_s6_nat_applied="NAT configured — nodes have internet access during the install"
         t_s7_title="Create VM disks"
         t_s7_desc="Creating 4 qcow2 disks per node in artifacts/disks/:\n  · a1 + a2  (20 GB each) → sda + sdb  — root ZFS mirror (rpool)\n  · b1 + b2  (40 GB each) → sdc + sdd  — VM storage ZFS pool (${DATA_ZPOOL_NAME})"
@@ -1797,6 +1799,7 @@ wizard() {
     if [[ "${USE_TAP_NETWORK}" == "1" ]]; then
         _wiz_step "${t_s6_title}" "${t_s6_desc}"
         _wiz_pause "${t_continue}"
+        _wiz_info "${t_s6_sudo_reason}"
         _wiz_run "network up" "sudo make network-up" \
             sudo "${self}" --config "${CONFIG_FILE}" --set USE_TAP_NETWORK=1 network up
         _wiz_ok "${t_s6_nat_applied}"
