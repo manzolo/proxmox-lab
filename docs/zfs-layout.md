@@ -1,5 +1,8 @@
 # ZFS Layout
 
+> Testato con **Proxmox VE 9.1-1**. Il layout dei pool ZFS è stabile tra versioni minor,
+> ma verificare sempre il comportamento dell'installer su versioni major diverse.
+
 ## Disk assignment
 
 Each VM has 4 virtual disks mapped to SCSI targets in this order:

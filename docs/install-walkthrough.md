@@ -1,5 +1,8 @@
 # Proxmox Lab — Installazione unattended e bootstrap cluster (passo per passo)
 
+> Testato con **Proxmox VE 9.1-1** su host Linux con KVM. Versioni diverse potrebbero
+> richiedere aggiornamenti a `PROXMOX_ISO_VERSION` e ai profili in `profiles/`.
+
 Questa guida parte da zero e porta a 3 nodi Proxmox con:
 - root su ZFS mirror (`sda` + `sdb`)
 - pool VM su ZFS mirror (`sdc` + `sdd`)

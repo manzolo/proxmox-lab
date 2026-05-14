@@ -1,5 +1,8 @@
 # Cluster Formation
 
+> Testato con **Proxmox VE 9.1-1**. I comandi `pvecm` e `pvesm` sono stabili tra versioni
+> minor; verificare la compatibilità su upgrade major (es. 9.x → 10.x).
+
 ## Prerequisites
 
 Before running the bootstrap script:
