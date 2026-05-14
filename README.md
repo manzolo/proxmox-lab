@@ -30,12 +30,25 @@ sudo apt-get install -y qemu-system-x86 qemu-utils docker.io iproute2 dialog
 
 ## Quick Start
 
+### Guided wizard (recommended)
+
+```bash
+cp config.env.example config.env   # set AUTO_ROOT_PASSWORD, network settings
+make wizard                        # step-by-step guided setup in English
+make wizard WIZARD_LANG=it         # stesso wizard in italiano
+```
+
+The wizard walks through every phase, shows the command it is about to run, pauses for confirmation, and prints a summary with URLs and credentials at the end.
+
+### Manual step-by-step
+
 ```bash
 cp config.env.example config.env   # edit AUTO_ROOT_PASSWORD at minimum
 make init
 make iso-configured
 make autoinstall-scaffold
 make autoinstall-prepare           # uses Docker automatically if needed
+sudo make network-up               # TAP mode; skip for user-mode networking
 make create
 make install-serial                # one node at a time — safe on any host
 make boot-headless
@@ -51,7 +64,9 @@ See [docs/install-walkthrough.md](docs/install-walkthrough.md) for the full step
 ```bash
 make help
 make status
-make tui
+make wizard                 # guided end-to-end setup (English)
+make wizard WIZARD_LANG=it  # same wizard in Italian
+make tui                    # interactive terminal menu
 
 make install-serial         # recommended: one node at a time
 make install-headless       # all nodes in parallel (faster, needs more RAM/I/O)
@@ -78,8 +93,8 @@ make clean-all
 GitHub Actions runs on every push:
 
 - shell linting with `shellcheck`
-- unattended ISO generation for all 3 nodes (inside a Debian Trixie container)
-- QEMU headless boot smoke test in `tcg` mode
+- unattended ISO generation for all 3 nodes (Debian Trixie container, `proxmox-auto-install-assistant`)
+- QEMU headless boot smoke test for all 3 nodes in `tcg` mode
 
 ## References
 

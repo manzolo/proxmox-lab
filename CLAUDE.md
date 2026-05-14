@@ -14,10 +14,14 @@ make lint
 # or directly:
 shellcheck bin/proxmox-lab create.sh run.sh destroy.sh tap/create.sh tap/run.sh tap/destroy.sh
 
+# Guided wizard (recommended for first run)
+make wizard                # English
+make wizard WIZARD_LANG=it # Italian
+
 # Interactive TUI (requires dialog or whiptail)
 make tui
 
-# Full first-run sequence
+# Full first-run sequence (manual)
 cp config.env.example config.env   # edit at minimum AUTO_ROOT_PASSWORD and network settings
 make init
 make iso-configured
@@ -26,7 +30,7 @@ make autoinstall-validate          # requires proxmox-auto-install-assistant
 make autoinstall-prepare
 sudo make network-up               # TAP mode; skip for user-mode networking
 make create
-make install-headless
+make install-serial                # recommended: one node at a time
 make boot-headless
 make cluster-scaffold              # generates artifacts/bootstrap/bootstrap-cluster.sh
 ```
@@ -37,13 +41,13 @@ For CI-like smoke testing locally, override `VM_ACCEL=tcg,thread=multi` and `VM_
 
 ## Architecture
 
-The entire project is driven by a single script, `bin/proxmox-lab`, which is ~1500 lines of Bash with `set -euo pipefail`. All Make targets call through to it with `./bin/proxmox-lab --config $(CONFIG) <subcommand>`.
+The entire project is driven by a single script, `bin/proxmox-lab`, which is ~2100 lines of Bash with `set -euo pipefail`. All Make targets call through to it with `./bin/proxmox-lab --config $(CONFIG) <subcommand>`.
 
 **Global options** (must come before the subcommand):
 - `--config PATH` — load a different config file (default: `config.env`)
 - `--set KEY=VALUE` — override any config variable for this invocation only
 
-**Subcommand groups**: `init`, `status`, `iso`, `network`, `vm`, `clean`, `autoinstall`, `cluster`, `tui`, `menu`
+**Subcommand groups**: `init`, `status`, `iso`, `network`, `vm`, `clean`, `autoinstall`, `cluster`, `tui`, `wizard`, `menu`
 
 ### Configuration
 
@@ -92,13 +96,27 @@ Source directories:
 - **install-headless**: boots from CD with `-no-reboot`; QEMU exits when the installer reboots, leaving a fully installed disk
 - **boot-headless**: boots from disk with `-no-shutdown`; daemonizes via `-daemonize -pidfile`; serial output goes to `artifacts/logs/pve0{N}-serial.log`
 
+When headless launch fails, the script prints the last 20 lines of the QEMU log before dying so the actual error is visible.
+
+### stop_all
+
+`stop_all` (used by `make stop` and the wizard's clean step) sends SIGTERM to each tracked PID and waits up to 5 s for the process to exit; if it doesn't, SIGKILL is sent. In TAP mode it also runs a `pgrep`-based pass to kill any residual QEMU processes that hold a TAP interface but have no PID file (e.g. after a stale `clean-all`).
+
 ### TUI
 
 `tui` detects `dialog`/`whiptail` and uses `dialog_menu_loop` if available, falling back to `tui_basic` (plain `read`). Both call the same underlying functions.
 
+### Wizard
+
+`wizard [en|it]` is a step-by-step guided setup that runs the full sequence (prerequisites check → clean → init → ISO → autoinstall ISOs → network → disks → install → boot → SSH key copy → cluster bootstrap) with confirmation pauses and coloured output. Invoked via `make wizard` (English) or `make wizard WIZARD_LANG=it` (Italian). All text lives in a translation block keyed by `_W_LANG`; `_W_STEP_WORD` controls the step label ("Step" / "Passo").
+
 ### TAP networking
 
 `network up`/`network down` require root and create/destroy a Linux bridge (`BRIDGE_NAME`) and one TAP interface per VM (`${TAP_PREFIX}{N}`). An optional physical NIC (`INTERFACE_NAME`) can be enslaved to the bridge. Cluster formation requires TAP mode so nodes can reach each other over the bridge.
+
+### clean subcommand
+
+`clean` accepts: `disks`, `logs`, `run`, `autoinstall`, `all`. `clean autoinstall` removes per-node answer files (`artifacts/autoinstall/*-answer.toml`) and per-node ISOs (`artifacts/iso/*-auto.iso`). `clean all` calls all four.
 
 ### Legacy scripts
 
