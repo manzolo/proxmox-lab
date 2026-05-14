@@ -727,10 +727,18 @@ clean_run() {
     log "removed pid files from ${RUN_DIR}"
 }
 
+clean_autoinstall() {
+    ensure_dirs
+    find "${AUTO_DIR}" -maxdepth 1 -type f -name '*-answer.toml' -delete
+    find "${ISO_DIR}" -maxdepth 1 -type f -name '*-auto.iso' -delete
+    log "removed autoinstall artifacts from ${AUTO_DIR} and ${ISO_DIR}"
+}
+
 clean_all() {
     clean_logs
     clean_run
     clean_disks
+    clean_autoinstall
     if [[ "${USE_TAP_NETWORK}" -eq 1 ]]; then
         warn "TAP mode enabled; run 'sudo proxmox-lab network down' if bridge cleanup is also required"
     fi
@@ -1432,32 +1440,41 @@ _W_CYAN=$'\033[0;36m'
 _W_RED=$'\033[0;31m'
 _W_STEP=0
 
+_wiz_sep() {
+    printf '%s  ────────────────────────────────────────────────────%s\n' "${_W_CYAN}" "${_W_RESET}"
+}
+
 _wiz_step() {
     _W_STEP=$((_W_STEP + 1))
-    printf '\n%s╔══ Passo %d ─ %s%s\n' "${_W_BOLD}${_W_CYAN}" "${_W_STEP}" "$1" "${_W_RESET}"
-    [[ -n "${2:-}" ]] && printf '%s\n' "$2"
+    _wiz_sep
+    printf '%s  Passo %d — %s%s\n' "${_W_BOLD}${_W_CYAN}" "${_W_STEP}" "$1" "${_W_RESET}"
+    _wiz_sep
+    [[ -n "${2:-}" ]] && printf '  %b\n' "$2"
 }
 
 _wiz_pause() {
-    printf '%s  → Premi INVIO per continuare, Ctrl+C per annullare... %s' "${_W_YELLOW}" "${_W_RESET}"
+    printf '\n%s  → Premi INVIO per continuare, Ctrl+C per annullare... %s' "${_W_YELLOW}" "${_W_RESET}"
     read -r
+    printf '\n'
 }
 
 _wiz_run() {
-    local label="$1"; shift
-    printf '  %s▶ %s%s\n' "${_W_BOLD}" "${label}" "${_W_RESET}"
+    # _wiz_run <label> <display_cmd> <actual_cmd...>
+    local label="$1" display_cmd="$2"; shift 2
+    printf '  %s▶  %s%s\n' "${_W_BOLD}" "${label}" "${_W_RESET}"
+    printf '     %s$ %s%s\n' "${_W_CYAN}" "${display_cmd}" "${_W_RESET}"
     if "$@"; then
-        printf '  %s✓ OK%s\n' "${_W_GREEN}" "${_W_RESET}"
+        printf '  %s✓  OK%s\n' "${_W_GREEN}" "${_W_RESET}"
     else
         local rc=$?
-        printf '  %s✗ Errore (rc=%d)%s\n' "${_W_RED}" "${rc}" "${_W_RESET}"
+        printf '  %s✗  Errore (rc=%d)%s\n' "${_W_RED}" "${rc}" "${_W_RESET}"
         die "wizard interrotto: ${label}"
     fi
 }
 
-_wiz_info() { printf '  %s• %s%s\n' "${_W_CYAN}"   "$*" "${_W_RESET}"; }
-_wiz_ok()   { printf '  %s✓ %s%s\n' "${_W_GREEN}"  "$*" "${_W_RESET}"; }
-_wiz_warn() { printf '  %s⚠ %s%s\n' "${_W_YELLOW}" "$*" "${_W_RESET}"; }
+_wiz_info() { printf '  %s·  %s%s\n' "${_W_CYAN}"   "$*" "${_W_RESET}"; }
+_wiz_ok()   { printf '  %s✓  %s%s\n' "${_W_GREEN}"  "$*" "${_W_RESET}"; }
+_wiz_warn() { printf '  %s⚠  %s%s\n' "${_W_YELLOW}" "$*" "${_W_RESET}"; }
 
 _wiz_wait_ssh() {
     local target="$1"
@@ -1545,14 +1562,14 @@ wizard() {
 
     # ── 2. Pulizia ────────────────────────────────────────────────────────────
     _wiz_step "Pulizia artefatti esistenti" \
-        "Rimuovo dischi, log e pid file precedenti.\n  Gli ISO scaricati vengono mantenuti."
+        "Rimuovo dischi, log, pid file e ISO per-nodo precedenti.\n  L'ISO base scaricato viene mantenuto."
     _wiz_pause
-    _wiz_run "clean all" clean_all
+    _wiz_run "clean all" "make clean-all" clean_all
 
     # ── 3. Init ───────────────────────────────────────────────────────────────
     _wiz_step "Inizializzazione directory" \
         "Creo le directory artifacts/ necessarie."
-    _wiz_run "init" init_workspace
+    _wiz_run "init" "make init" init_workspace
 
     # ── 4. ISO ────────────────────────────────────────────────────────────────
     local iso_path
@@ -1563,15 +1580,15 @@ wizard() {
         _wiz_ok "ISO già presente, salto il download"
     else
         _wiz_pause
-        _wiz_run "scarico ISO ${PROXMOX_ISO_VERSION}" iso_fetch configured
+        _wiz_run "scarico ISO ${PROXMOX_ISO_VERSION}" "make iso-configured" iso_fetch configured
     fi
 
     # ── 5. Autoinstall ISOs ───────────────────────────────────────────────────
     _wiz_step "Generazione ISO unattended per ogni nodo" \
         "Per ogni nodo creo un file di risposta TOML con hostname, IP statico, password\n  e layout disco, poi lo incorporo in una copia dell'ISO base.\n  Risultato: artifacts/iso/pve0N-auto.iso"
     _wiz_pause
-    _wiz_run "autoinstall scaffold" autoinstall_scaffold all
-    _wiz_run "autoinstall prepare-iso" autoinstall_prepare_iso "${iso_path}" all
+    _wiz_run "autoinstall scaffold" "make autoinstall-scaffold" autoinstall_scaffold all
+    _wiz_run "autoinstall prepare-iso" "make autoinstall-prepare" autoinstall_prepare_iso "${iso_path}" all
 
     # ── 6. Rete TAP ───────────────────────────────────────────────────────────
     if [[ "${USE_TAP_NETWORK}" == "1" ]]; then
@@ -1579,31 +1596,32 @@ wizard() {
         _wiz_step "Rete TAP/bridge — richiede sudo" \
             "Creo il bridge ${BRIDGE_NAME} con IP ${BRIDGE_ADDRESS:-<BRIDGE_ADDRESS non impostato>}\n  e i TAP ${TAP_PREFIX}1…${TAP_PREFIX}${NUM_VMS}.\n\n  IMPORTANTE — NAT per accesso internet durante l'install:\n    sudo sysctl -w net.ipv4.ip_forward=1\n    sudo iptables -t nat -A POSTROUTING -s ${subnet} -o \$(ip route get 8.8.8.8 | awk '/dev/{print \$5; exit}') -j MASQUERADE\n  Senza NAT l'install funziona ma potrebbe rallentare su timeout NTP/DNS."
         _wiz_pause
-        _wiz_run "network up (sudo)" \
+        _wiz_run "network up" "sudo make network-up" \
             sudo "${self}" --config "${CONFIG_FILE}" --set USE_TAP_NETWORK=1 network up
         printf '\n'
         _wiz_warn "Ricorda di aggiungere le regole NAT sopra se vuoi accesso internet durante l'install."
-        printf '  %s→ Premi INVIO quando sei pronto (o subito se hai già il NAT attivo)... %s' "${_W_YELLOW}" "${_W_RESET}"
+        printf '\n  %s→ Premi INVIO quando sei pronto (o subito se hai già il NAT attivo)... %s' "${_W_YELLOW}" "${_W_RESET}"
         read -r
+        printf '\n'
     fi
 
     # ── 7. Dischi ─────────────────────────────────────────────────────────────
     _wiz_step "Creazione dischi VM" \
-        "Per ogni nodo creo 4 dischi qcow2 in artifacts/disks/:\n  • a1 + a2  (20 GB ciascuno) → sda + sdb  — root ZFS mirror (rpool)\n  • b1 + b2  (40 GB ciascuno) → sdc + sdd  — pool VM ZFS (${DATA_ZPOOL_NAME})"
+        "Per ogni nodo creo 4 dischi qcow2 in artifacts/disks/:\n  · a1 + a2  (20 GB ciascuno) → sda + sdb  — root ZFS mirror (rpool)\n  · b1 + b2  (40 GB ciascuno) → sdc + sdd  — pool VM ZFS (${DATA_ZPOOL_NAME})"
     _wiz_pause
-    _wiz_run "vm create" create_disks
+    _wiz_run "vm create" "make create" create_disks
 
     # ── 8. Install ────────────────────────────────────────────────────────────
     _wiz_step "Installazione unattended (sequenziale)" \
         "Ogni VM si avvia dall'ISO unattended e installa Proxmox su ZFS mirror.\n  QEMU esce automaticamente al riavvio che segnala il termine dell'install.\n  Durata stimata: 15–30 minuti per nodo (dipende da I/O e CPU).\n\n  Monitora il progresso in un altro terminale:\n    watch -n 10 'ls -lh artifacts/disks/pve0*a1.qcow2'"
     _wiz_pause
-    _wiz_run "install serial (tutti i nodi)" install_all_headless_serial
+    _wiz_run "install serial" "make install-serial" install_all_headless_serial
 
     # ── 9. Boot ───────────────────────────────────────────────────────────────
     _wiz_step "Boot dei nodi installati" \
         "I nodi si avviano dal disco in modalità headless (background).\n  Il log seriale è in artifacts/logs/pve0N-serial.log.\n  Aspetto che SSH sia disponibile su tutti i nodi prima di continuare."
     _wiz_pause
-    _wiz_run "boot headless" boot_all_headless
+    _wiz_run "boot headless" "make boot-headless" boot_all_headless
     printf '\n'
     local idx
     for ((idx = 1; idx <= NUM_VMS; idx++)); do
@@ -1616,12 +1634,14 @@ wizard() {
     _wiz_pause
     if [[ ! -f "${HOME}/.ssh/id_ed25519.pub" && ! -f "${HOME}/.ssh/id_rsa.pub" ]]; then
         _wiz_run "genera chiave SSH host" \
+            "ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519" \
             ssh-keygen -t ed25519 -N '' -f "${HOME}/.ssh/id_ed25519" -q
     fi
     for ((idx = 1; idx <= NUM_VMS; idx++)); do
         local node_addr
         node_addr="$(node_address "${idx}")"
-        _wiz_run "ssh-copy-id → ${node_addr}" \
+        _wiz_run "copia chiave SSH su nodo ${idx}" \
+            "ssh-copy-id root@${node_addr}" \
             ssh-copy-id -o StrictHostKeyChecking=accept-new "root@${node_addr}"
     done
 
@@ -1629,8 +1649,9 @@ wizard() {
     _wiz_step "Bootstrap cluster" \
         "Genero il bootstrap script ed eseguo automaticamente:\n  1. Scambio chiavi SSH tra i nodi (per pvecm add -use_ssh 1)\n  2. pvecm create ${CLUSTER_NAME}  su pve01\n  3. zpool create ${DATA_ZPOOL_NAME}  su ogni nodo (con percorsi by-id stabili)\n  4. Registrazione storage vmdata in Proxmox\n  5. pvecm add  su pve02…pve0${NUM_VMS}"
     _wiz_pause
-    _wiz_run "cluster scaffold" cluster_scaffold
-    _wiz_run "bootstrap cluster" bash "${BOOTSTRAP_DIR}/bootstrap-cluster.sh"
+    _wiz_run "cluster scaffold" "make cluster-scaffold" cluster_scaffold
+    _wiz_run "bootstrap cluster" "bash artifacts/bootstrap/bootstrap-cluster.sh" \
+        bash "${BOOTSTRAP_DIR}/bootstrap-cluster.sh"
 
     # ── Completato ────────────────────────────────────────────────────────────
     printf '\n%s' "${_W_BOLD}${_W_GREEN}"
@@ -1875,8 +1896,9 @@ main() {
                 disks) clean_disks ;;
                 logs) clean_logs ;;
                 run) clean_run ;;
+                autoinstall) clean_autoinstall ;;
                 all) clean_all ;;
-                *) die "usage: proxmox-lab clean disks|logs|run|all" ;;
+                *) die "usage: proxmox-lab clean disks|logs|run|autoinstall|all" ;;
             esac
             ;;
         autoinstall)
