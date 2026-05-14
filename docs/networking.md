@@ -84,16 +84,26 @@ With `AUTOINSTALL_PROFILE=zfs-mirror` (the default), each node requests an addre
 - Set `DHCP_ON_BRIDGE=1` and enslave a physical NIC to let the bridge uplink to an existing DHCP server
 - Run `dnsmasq` on the bridge with static leases keyed on the deterministic MAC addresses (`52:54:00:ac:11:0N`)
 
-## Firewall / iptables
+## NAT / iptables
 
-`network-up` does not set up masquerading or forwarding rules. Add them manually if you want the lab nodes to reach the internet (required for the Proxmox automated installer with static IPs):
+When `NODE_FIRST_IP` is set (static-IP mode), `make network-up` automatically:
+
+1. Enables `net.ipv4.ip_forward`
+2. Adds a `MASQUERADE` rule for the node subnet (`NODE_FIRST_IP` base + `/NODE_PREFIX_LEN`) to the outbound interface detected via `ip route get 8.8.8.8`
+3. Adds `FORWARD ACCEPT` rules for the bridge
+
+`make network-down` removes the same rules.
+
+To manage NAT independently:
 
 ```bash
-# Find your outbound interface: ip route get 8.8.8.8
-sudo sysctl -w net.ipv4.ip_forward=1
-sudo iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o eth0 -j MASQUERADE
-sudo iptables -A FORWARD -i manzolo-br0 -j ACCEPT
-sudo iptables -A FORWARD -o manzolo-br0 -j ACCEPT
+sudo make network-nat-up    # apply rules only
+sudo make network-nat-down  # remove rules only
 ```
 
-Replace `eth0` with your outbound interface (e.g. `tun0` for VPN, `eno1` for wired). These rules are not persistent across reboots — reapply after each host restart or use `iptables-persistent`.
+These rules are not persistent across host reboots. To make them permanent:
+
+```bash
+sudo apt-get install -y iptables-persistent
+sudo netfilter-persistent save
+```

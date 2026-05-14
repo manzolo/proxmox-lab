@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 CLI := ./bin/proxmox-lab
 CONFIG ?= ./config.env
 
-.PHONY: help init status tui wizard iso-latest iso-configured create install-headless install-serial boot boot-headless start start-headless stop vm-inspect vm-serial network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate autoinstall-prepare cluster-scaffold lint
+.PHONY: help init status tui wizard iso-latest iso-configured create install-headless install-serial boot boot-headless start start-headless stop vm-inspect vm-serial network-up network-down network-nat-up network-nat-down clean clean-all autoinstall-scaffold autoinstall-validate autoinstall-prepare cluster-scaffold lint
 
 help:
 	@printf '%s\n' \
@@ -25,8 +25,10 @@ help:
 		'  make stop                  stop all VMs' \
 		'  make vm-inspect            inspect current VM pid/log paths' \
 		'  make vm-serial             print the latest headless serial log for VM1' \
-		'  make network-up            bring TAP bridge up (root)' \
-		'  make network-down          tear TAP bridge down (root)' \
+		'  make network-up            bring TAP bridge up + apply NAT rules (root)' \
+		'  make network-down          tear TAP bridge down + remove NAT rules (root)' \
+		'  make network-nat-up        apply NAT rules only (root)' \
+		'  make network-nat-down      remove NAT rules only (root)' \
 		'  make clean                 remove disk artifacts' \
 		'  make clean-all             remove logs, pid files, disks' \
 		'  make autoinstall-scaffold  create per-node answer files under artifacts/autoinstall/' \
@@ -90,6 +92,12 @@ network-up:
 
 network-down:
 	$(CLI) --config $(CONFIG) --set USE_TAP_NETWORK=1 network down
+
+network-nat-up:
+	$(CLI) --config $(CONFIG) network nat-up
+
+network-nat-down:
+	$(CLI) --config $(CONFIG) network nat-down
 
 clean:
 	$(CLI) --config $(CONFIG) clean disks

@@ -84,7 +84,7 @@ Usage:
   proxmox-lab iso current
   proxmox-lab iso configured-path
   proxmox-lab iso fetch [latest|VERSION|URL]
-  proxmox-lab network up|down|status
+  proxmox-lab network up|down|status|nat-up|nat-down
   proxmox-lab vm create
   proxmox-lab vm install-headless [all|INDEX]
   proxmox-lab vm install-headless-serial [all|INDEX]
@@ -702,6 +702,10 @@ network_up() {
         require_command dhclient
         dhclient -v "${BRIDGE_NAME}"
     fi
+
+    if [[ -n "${NODE_FIRST_IP}" ]]; then
+        nat_up
+    fi
 }
 
 network_down() {
@@ -725,6 +729,55 @@ network_down() {
 
     ip link set dev "${BRIDGE_NAME}" down 2>/dev/null || true
     ip link delete "${BRIDGE_NAME}" type bridge 2>/dev/null || true
+
+    if [[ -n "${NODE_FIRST_IP}" ]]; then
+        nat_down
+    fi
+}
+
+nat_up() {
+    require_root
+    if ! command -v iptables >/dev/null 2>&1; then
+        warn "iptables not found; NAT not configured"
+        return 0
+    fi
+    local outbound_iface
+    outbound_iface="$(ip route get 8.8.8.8 2>/dev/null \
+        | awk 'NR==1{for(i=1;i<=NF;i++) if ($i=="dev"){print $(i+1); exit}}')"
+    if [[ -z "${outbound_iface}" ]]; then
+        warn "cannot determine outbound interface; NAT not configured"
+        return 0
+    fi
+    local ip_base subnet
+    ip_base="${NODE_FIRST_IP%.*}"
+    subnet="${ip_base}.0/${NODE_PREFIX_LEN}"
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null
+    if ! iptables -t nat -C POSTROUTING -s "${subnet}" -o "${outbound_iface}" -j MASQUERADE 2>/dev/null; then
+        iptables -t nat -A POSTROUTING -s "${subnet}" -o "${outbound_iface}" -j MASQUERADE
+    fi
+    if ! iptables -C FORWARD -i "${BRIDGE_NAME}" -j ACCEPT 2>/dev/null; then
+        iptables -A FORWARD -i "${BRIDGE_NAME}" -j ACCEPT
+    fi
+    if ! iptables -C FORWARD -o "${BRIDGE_NAME}" -j ACCEPT 2>/dev/null; then
+        iptables -A FORWARD -o "${BRIDGE_NAME}" -j ACCEPT
+    fi
+    log "NAT enabled: ${subnet} → ${outbound_iface}"
+}
+
+nat_down() {
+    require_root
+    local outbound_iface
+    outbound_iface="$(ip route get 8.8.8.8 2>/dev/null \
+        | awk 'NR==1{for(i=1;i<=NF;i++) if ($i=="dev"){print $(i+1); exit}}')" || true
+    if [[ -n "${outbound_iface}" ]]; then
+        local ip_base subnet
+        ip_base="${NODE_FIRST_IP%.*}"
+        subnet="${ip_base}.0/${NODE_PREFIX_LEN}"
+        iptables -t nat -D POSTROUTING -s "${subnet}" -o "${outbound_iface}" -j MASQUERADE 2>/dev/null || true
+    fi
+    iptables -D FORWARD -i "${BRIDGE_NAME}" -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -o "${BRIDGE_NAME}" -j ACCEPT 2>/dev/null || true
+    log "NAT rules removed"
 }
 
 clean_disks() {
@@ -1545,7 +1598,7 @@ wizard() {
     local t_s1_ok_docker t_s1_miss_tool
     local t_s2_title t_s2_stop t_s2_desc t_s3_title t_s3_desc
     local t_s4_title t_s4_desc t_s4_present t_s4_run
-    local t_s5_title t_s5_desc t_s6_title t_s6_desc t_s6_nat_warn t_s6_nat_ready
+    local t_s5_title t_s5_desc t_s6_title t_s6_desc t_s6_nat_applied
     local t_s7_title t_s7_desc t_s8_title t_s8_desc t_s9_title t_s9_desc
     local t_s10_title t_s10_desc t_s10_keygen t_s10_clean t_s10_copy t_s10_pw_hint
     local t_s11_title t_s11_desc
@@ -1581,9 +1634,8 @@ wizard() {
         t_s5_title="Generazione ISO unattended per ogni nodo"
         t_s5_desc="Per ogni nodo creo un file di risposta TOML con hostname, IP statico, password\n  e layout disco, poi lo incorporo in una copia dell'ISO base.\n  Risultato: artifacts/iso/pve0N-auto.iso"
         t_s6_title="Rete TAP/bridge — richiede sudo"
-        t_s6_desc="Creo il bridge ${BRIDGE_NAME} con IP ${BRIDGE_ADDRESS:-<BRIDGE_ADDRESS non impostato>}\n  e i TAP ${TAP_PREFIX}1…${TAP_PREFIX}${NUM_VMS}.\n\n  IMPORTANTE — NAT per accesso internet durante l'install:\n    sudo sysctl -w net.ipv4.ip_forward=1\n    sudo iptables -t nat -A POSTROUTING -s ${subnet} -o \$(ip route get 8.8.8.8 | awk '/dev/{print \$5; exit}') -j MASQUERADE\n  Senza NAT l'install funziona ma potrebbe rallentare su timeout NTP/DNS."
-        t_s6_nat_warn="Ricorda di aggiungere le regole NAT sopra per avere accesso internet durante l'install."
-        t_s6_nat_ready="Premi INVIO quando sei pronto (o subito se hai già il NAT attivo)..."
+        t_s6_desc="Creo il bridge ${BRIDGE_NAME} con IP ${BRIDGE_ADDRESS:-<BRIDGE_ADDRESS non impostato>}\n  e i TAP ${TAP_PREFIX}1…${TAP_PREFIX}${NUM_VMS}.\n  Le regole NAT/MASQUERADE vengono aggiunte automaticamente (subnet ${subnet}).\n  Rimosse automaticamente con 'sudo make network-down'."
+        t_s6_nat_applied="NAT configurato — i nodi hanno accesso internet durante l'install"
         t_s7_title="Creazione dischi VM"
         t_s7_desc="Per ogni nodo creo 4 dischi qcow2 in artifacts/disks/:\n  · a1 + a2  (20 GB ciascuno) → sda + sdb  — root ZFS mirror (rpool)\n  · b1 + b2  (40 GB ciascuno) → sdc + sdd  — pool VM ZFS (${DATA_ZPOOL_NAME})"
         t_s8_title="Installazione unattended (sequenziale)"
@@ -1633,9 +1685,8 @@ wizard() {
         t_s5_title="Build per-node unattended ISOs"
         t_s5_desc="For each node, a TOML answer file is generated (hostname, static IP,\n  password, disk layout) and embedded into a copy of the base ISO.\n  Output: artifacts/iso/pve0N-auto.iso"
         t_s6_title="TAP/bridge network — requires sudo"
-        t_s6_desc="Creating bridge ${BRIDGE_NAME} with IP ${BRIDGE_ADDRESS:-<BRIDGE_ADDRESS not set>}\n  and TAP interfaces ${TAP_PREFIX}1…${TAP_PREFIX}${NUM_VMS}.\n\n  IMPORTANT — NAT for internet access during the install:\n    sudo sysctl -w net.ipv4.ip_forward=1\n    sudo iptables -t nat -A POSTROUTING -s ${subnet} -o \$(ip route get 8.8.8.8 | awk '/dev/{print \$5; exit}') -j MASQUERADE\n  Without NAT the install completes but may slow down on NTP/DNS timeouts."
-        t_s6_nat_warn="Remember to add the NAT rules above for internet access during the install."
-        t_s6_nat_ready="Press ENTER when ready (or immediately if NAT is already active)..."
+        t_s6_desc="Creating bridge ${BRIDGE_NAME} with IP ${BRIDGE_ADDRESS:-<BRIDGE_ADDRESS not set>}\n  and TAP interfaces ${TAP_PREFIX}1…${TAP_PREFIX}${NUM_VMS}.\n  NAT/MASQUERADE rules are added automatically (subnet ${subnet}).\n  Removed automatically by 'sudo make network-down'."
+        t_s6_nat_applied="NAT configured — nodes have internet access during the install"
         t_s7_title="Create VM disks"
         t_s7_desc="Creating 4 qcow2 disks per node in artifacts/disks/:\n  · a1 + a2  (20 GB each) → sda + sdb  — root ZFS mirror (rpool)\n  · b1 + b2  (40 GB each) → sdc + sdd  — VM storage ZFS pool (${DATA_ZPOOL_NAME})"
         t_s8_title="Unattended install (serial)"
@@ -1748,9 +1799,7 @@ wizard() {
         _wiz_pause "${t_continue}"
         _wiz_run "network up" "sudo make network-up" \
             sudo "${self}" --config "${CONFIG_FILE}" --set USE_TAP_NETWORK=1 network up
-        printf '\n'
-        _wiz_warn "${t_s6_nat_warn}"
-        _wiz_pause "${t_s6_nat_ready}"
+        _wiz_ok "${t_s6_nat_applied}"
     fi
 
     # ── 7. Disks ──────────────────────────────────────────────────────────────
@@ -1999,7 +2048,9 @@ main() {
                 up) network_up ;;
                 down) network_down ;;
                 status) network_status ;;
-                *) die "usage: proxmox-lab network up|down|status" ;;
+                nat-up) nat_up ;;
+                nat-down) nat_down ;;
+                *) die "usage: proxmox-lab network up|down|status|nat-up|nat-down" ;;
             esac
             ;;
         vm)
