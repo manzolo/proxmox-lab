@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 CLI := ./bin/proxmox-lab
 CONFIG ?= ./config.env
 
-.PHONY: help init status tui iso-latest iso-configured create start stop network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate lint
+.PHONY: help init status tui iso-latest iso-configured create start start-headless stop vm-inspect vm-serial network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate lint
 
 help:
 	@printf '%s\n' \
@@ -15,7 +15,10 @@ help:
 		'  make iso-configured        download PROXMOX_ISO_VERSION from config' \
 		'  make create                create qcow2 disks' \
 		'  make start                 start all VMs' \
+		'  make start-headless        start all VMs without a GTK window' \
 		'  make stop                  stop all VMs' \
+		'  make vm-inspect            inspect current VM pid/log paths' \
+		'  make vm-serial             print the latest headless serial log for VM1' \
 		'  make network-up            bring TAP bridge up (root)' \
 		'  make network-down          tear TAP bridge down (root)' \
 		'  make clean                 remove disk artifacts' \
@@ -45,8 +48,17 @@ create:
 start:
 	$(CLI) --config $(CONFIG) vm start
 
+start-headless:
+	$(CLI) --config $(CONFIG) vm start-headless
+
 stop:
 	$(CLI) --config $(CONFIG) vm stop
+
+vm-inspect:
+	$(CLI) --config $(CONFIG) vm inspect
+
+vm-serial:
+	$(CLI) --config $(CONFIG) vm serial 1
 
 network-up:
 	$(CLI) --config $(CONFIG) --set USE_TAP_NETWORK=1 network up

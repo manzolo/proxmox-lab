@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint shell scripts
+        run: shellcheck bin/proxmox-lab create.sh run.sh destroy.sh tap/create.sh tap/run.sh tap/destroy.sh
+
+  autoinstall-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare config
+        run: cp config.env.example config.env
+
+      - name: Verify autoinstall media generation in Debian Trixie
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace debian:trixie bash -lc '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y curl wget ca-certificates gnupg xorriso
+            install -d /usr/share/keyrings
+            wget -qO /usr/share/keyrings/proxmox-archive-keyring.gpg https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg
+            cat >/etc/apt/sources.list.d/pve-install-repo.sources <<EOF
+            Types: deb
+            URIs: http://download.proxmox.com/debian/pve
+            Suites: trixie
+            Components: pve-no-subscription
+            Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+            EOF
+            apt-get update
+            apt-get install -y proxmox-auto-install-assistant
+            ./bin/proxmox-lab init
+            ./bin/proxmox-lab iso fetch configured
+            rm -f artifacts/autoinstall/answer.toml
+            ./bin/proxmox-lab autoinstall scaffold
+            ./bin/proxmox-lab autoinstall validate
+            ./bin/proxmox-lab autoinstall prepare-iso artifacts/iso/current.iso artifacts/autoinstall/answer.toml
+            test -f artifacts/iso/proxmox-ve_9.1-1-auto.iso
+          '

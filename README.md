@@ -1,5 +1,7 @@
 # Proxmox Lab
 
+Repository: `https://github.com/manzolo/proxmox-lab`
+
 Small local lab tooling to spin up multiple Proxmox VE installers under QEMU, manage disk artifacts, and optionally prepare TAP-based networking and automated-install media.
 
 ## What this repo does
@@ -39,7 +41,10 @@ make tui
 make iso-configured
 make create
 make start
+make start-headless
 make stop
+make vm-inspect
+make vm-serial
 make clean-all
 make autoinstall-scaffold
 make autoinstall-validate
@@ -78,6 +83,13 @@ make autoinstall-validate
 ./bin/proxmox-lab autoinstall prepare-iso artifacts/iso/current.iso artifacts/autoinstall/answer.toml
 ```
 
+For host-side smoke testing without a GTK window:
+```bash
+./bin/proxmox-lab vm start-headless 1
+./bin/proxmox-lab vm inspect 1
+./bin/proxmox-lab vm serial 1
+```
+
 Useful references:
 - https://pve.proxmox.com/wiki/Automated_Installation
 - https://pve.proxmox.com/pve-docs/pve-installation-plain.html
@@ -86,3 +98,4 @@ Useful references:
 - Existing `*.qcow2` files in the repo root are older artifacts; the current workflow writes new ones under `artifacts/disks/`.
 - If `curl` reports a hostname or certificate mismatch for `download.proxmox.com`, fix DNS/proxy/certificate trust first. `ALLOW_INSECURE_TLS=1` exists only as a lab fallback and weakens transport security.
 - QEMU launch, TAP bridge setup, ISO download, and automated install preparation depend on host packages and were not fully exercised in CI because this repo has no automated test harness yet.
+- GitHub Actions runs shell linting and an autoinstall media verification job in a temporary Debian Trixie container with the official Proxmox `pve-no-subscription` repository.
