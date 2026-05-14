@@ -81,6 +81,7 @@ Usage:
   proxmox-lab network up|down|status
   proxmox-lab vm create
   proxmox-lab vm install-headless [all|INDEX]
+  proxmox-lab vm install-headless-serial [all|INDEX]
   proxmox-lab vm boot [all|INDEX]
   proxmox-lab vm boot-headless [all|INDEX]
   proxmox-lab vm start [all|INDEX]
@@ -1402,6 +1403,34 @@ install_all_headless() {
     done
 }
 
+wait_for_install() {
+    local index="$1"
+    local vm pid_file pid
+    vm="$(vm_name "${index}")"
+    pid_file="$(vm_pid_path "${index}")"
+    local pid
+    pid="$(cat "${pid_file}" 2>/dev/null || true)"
+    [[ -n "${pid}" ]] || { warn "${vm}: no pid file, skipping wait"; return 0; }
+    log "waiting for ${vm} install to complete (pid ${pid})..."
+    while kill -0 "${pid}" 2>/dev/null; do
+        sleep 5
+    done
+    log "${vm} install complete"
+}
+
+install_vm_headless_serial() {
+    local index="$1"
+    install_vm_headless "${index}"
+    wait_for_install "${index}"
+}
+
+install_all_headless_serial() {
+    local index
+    for ((index = 1; index <= NUM_VMS; index++)); do
+        install_vm_headless_serial "${index}"
+    done
+}
+
 boot_all() {
     local index
     for ((index = 1; index <= NUM_VMS; index++)); do
@@ -1487,6 +1516,12 @@ main() {
                     case "${2:-all}" in
                         all) install_all_headless ;;
                         *) install_vm_headless "${2}" ;;
+                    esac
+                    ;;
+                install-headless-serial)
+                    case "${2:-all}" in
+                        all) install_all_headless_serial ;;
+                        *) install_vm_headless_serial "${2}" ;;
                     esac
                     ;;
                 boot)

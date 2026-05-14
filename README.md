@@ -83,6 +83,15 @@ That mode:
 - boots once from the unattended ISO
 - uses `-no-reboot`
 - exits automatically when the guest finishes installation and tries to reboot
+- all nodes run in parallel
+
+On hosts with limited I/O or RAM, run nodes one at a time to avoid contention:
+
+```bash
+make install-serial
+```
+
+`install-serial` starts each VM, waits for it to finish, then starts the next.
 
 Then boot the installed systems from disk:
 
@@ -201,7 +210,8 @@ For TAP mode also set:
 make help
 make status
 make create
-make install-headless
+make install-headless       # all nodes in parallel
+make install-serial         # one node at a time (safer on constrained hosts)
 make boot
 make boot-headless
 make stop

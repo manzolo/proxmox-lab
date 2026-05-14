@@ -113,29 +113,23 @@ ip link show pvlab-tap1
 ## 6. Installazione unattended
 
 ```bash
-# Avvia tutte e 3 le VM in modalità headless con -no-reboot
-# QEMU esce automaticamente quando l'installer prova a riavviare
+# Tutte le VM in parallelo (richiede host con RAM/I/O sufficienti)
 make install-headless
+
+# Una VM alla volta — consigliato su host con risorse limitate
+make install-serial
 ```
 
-Le VM partono in background. Il progresso si monitora via dimensione dei dischi:
+`install-serial` avvia ogni VM, attende che QEMU esca (segnale di install completato),
+poi passa alla successiva. Più lento ma immune da contention su disco e RAM.
+
+Il progresso si monitora via dimensione dei dischi:
 
 ```bash
-# Monitoraggio continuo (Ctrl+C per uscire)
 watch -n 5 'ls -lh artifacts/disks/*.qcow2'
 ```
 
-L'install è completo quando i dischi `pve0Xa1` e `pve0Xa2` raggiungono ~2–3 GB e il pid file
-scompare da `artifacts/run/`.
-
-> **Attenzione**: con risorse host limitate, avviare le VM una alla volta per evitare contention:
->
-> ```bash
-> ./bin/proxmox-lab vm install-headless 1
-> # attendere completamento (pid sparisce da artifacts/run/)
-> ./bin/proxmox-lab vm install-headless 2
-> ./bin/proxmox-lab vm install-headless 3
-> ```
+L'install è completo quando i dischi `pve0Xa1` e `pve0Xa2` raggiungono ~2–3 GB.
 
 ## 7. Boot dei nodi installati
 

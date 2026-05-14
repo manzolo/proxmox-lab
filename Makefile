@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 CLI := ./bin/proxmox-lab
 CONFIG ?= ./config.env
 
-.PHONY: help init status tui iso-latest iso-configured create install-headless boot boot-headless start start-headless stop vm-inspect vm-serial network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate autoinstall-prepare cluster-scaffold lint
+.PHONY: help init status tui iso-latest iso-configured create install-headless install-serial boot boot-headless start start-headless stop vm-inspect vm-serial network-up network-down clean clean-all autoinstall-scaffold autoinstall-validate autoinstall-prepare cluster-scaffold lint
 
 help:
 	@printf '%s\n' \
@@ -14,7 +14,8 @@ help:
 		'  make iso-latest            download latest Proxmox VE ISO' \
 		'  make iso-configured        download PROXMOX_ISO_VERSION from config' \
 		'  make create                create qcow2 disks' \
-		'  make install-headless      unattended install for all VMs, exit on reboot' \
+		'  make install-headless      unattended install for all VMs in parallel, exit on reboot' \
+		'  make install-serial        unattended install for all VMs one at a time (safer on constrained hosts)' \
 		'  make boot                  boot all VMs from disk' \
 		'  make boot-headless         boot all VMs from disk without a GTK window' \
 		'  make start                 alias for make boot' \
@@ -52,6 +53,9 @@ create:
 
 install-headless:
 	$(CLI) --config $(CONFIG) vm install-headless
+
+install-serial:
+	$(CLI) --config $(CONFIG) vm install-headless-serial
 
 boot:
 	$(CLI) --config $(CONFIG) vm boot
