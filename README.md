@@ -88,9 +88,13 @@ make clean-all
 | [docs/install-walkthrough.md](docs/install-walkthrough.md) | Full install and cluster bootstrap, step by step |
 | [docs/it/install-walkthrough.md](docs/it/install-walkthrough.md) | Stessa guida in italiano |
 | [docs/configuration.md](docs/configuration.md) | All `config.env` variables with descriptions |
+| [docs/it/configuration.md](docs/it/configuration.md) | Tutte le variabili `config.env` con descrizioni |
 | [docs/networking.md](docs/networking.md) | TAP/bridge setup for cluster networking |
+| [docs/it/networking.md](docs/it/networking.md) | Configurazione TAP/bridge per il networking del cluster |
 | [docs/zfs-layout.md](docs/zfs-layout.md) | ZFS mirror layout and post-install pool setup |
+| [docs/it/zfs-layout.md](docs/it/zfs-layout.md) | Layout ZFS mirror e configurazione pool post-install |
 | [docs/cluster.md](docs/cluster.md) | Cluster formation and Ceph notes |
+| [docs/it/cluster.md](docs/it/cluster.md) | Formazione del cluster e note su Ceph |
 
 ## CI
 
