@@ -1,105 +1,105 @@
-# Proxmox Lab — Installazione unattended e bootstrap cluster (passo per passo)
+# Proxmox Lab — Unattended install and cluster bootstrap (step by step)
 
-> Testato con **Proxmox VE 9.1-1** su host Linux con KVM. Versioni diverse potrebbero
-> richiedere aggiornamenti a `PROXMOX_ISO_VERSION` e ai profili in `profiles/`.
+> Tested with **Proxmox VE 9.1-1** on a Linux host with KVM. Different versions may
+> require updating `PROXMOX_ISO_VERSION` and the profiles under `profiles/`.
 
-> **Percorso rapido**: `make wizard` (o `make wizard WIZARD_LANG=it`) esegue tutti i passi
-> di questa guida in modo guidato e interattivo, con pausa di conferma ad ogni fase.
-> Questa guida manuale è utile per capire i dettagli o per eseguire i passi singolarmente.
+> **Fast path**: `make wizard` (or `make wizard WIZARD_LANG=it`) runs every step of this
+> guide interactively with a confirmation pause at each phase. This manual walkthrough is
+> useful for understanding the details or running steps individually.
 
-Questa guida parte da zero e porta a 3 nodi Proxmox con:
-- root su ZFS mirror (`sda` + `sdb`)
-- pool VM su ZFS mirror (`sdc` + `sdd`)
-- cluster a 3 nodi via TAP/bridge
+This guide starts from scratch and produces 3 Proxmox nodes with:
+- root on ZFS mirror (`sda` + `sdb`)
+- VM storage pool on ZFS mirror (`sdc` + `sdd`)
+- 3-node cluster over TAP/bridge networking
 
-## Prerequisiti host
+## Host prerequisites
 
 ```bash
-# QEMU e strumenti disco
+# QEMU and disk tools
 sudo apt-get install -y qemu-system-x86 qemu-utils
 
-# TUI interattiva (opzionale)
+# Interactive TUI (optional)
 sudo apt-get install -y dialog
 
-# Docker — serve solo se proxmox-auto-install-assistant non è installato localmente
-# (il CLI lo usa automaticamente come fallback)
+# Docker — only needed if proxmox-auto-install-assistant is not installed locally
+# (the CLI uses it automatically as a fallback)
 sudo apt-get install -y docker.io
 
-# Networking TAP/bridge
+# TAP/bridge networking
 sudo apt-get install -y iproute2
 ```
 
-## 1. Configurazione iniziale
+## 1. Initial configuration
 
 ```bash
 cp config.env.example config.env
 ```
 
-Modificare almeno questi valori in `config.env`:
+Edit at least these values in `config.env`:
 
-| Variabile | Valore consigliato | Note |
+| Variable | Recommended value | Notes |
 |---|---|---|
-| `AUTO_ROOT_PASSWORD` | password sicura | password root di ogni nodo |
-| `AUTO_DOMAIN` | `lab.local` o dominio reale | FQDN dei nodi |
-| `VM_MEMORY_MB` | `4096` o più | minimo 4 GB per nodo |
-| `VM_ACCEL` | `kvm` | usare `tcg,thread=multi` se KVM non disponibile |
-| `USE_TAP_NETWORK` | `0` per install, `1` per cluster | vedere sotto |
-| `BRIDGE_NAME` | es. `pvlab-br0` | nome del bridge Linux |
-| `TAP_PREFIX` | es. `pvlab-tap` | prefisso TAP per ogni nodo |
-| `CLUSTER_NAME` | `pvelab` | nome del cluster Proxmox |
-| `DATA_ZPOOL_NAME` | `vmdata` | nome del pool dati |
-| `DATA_ZPOOL_DEVICES` | `sdc sdd` | dischi per il secondo mirror |
+| `AUTO_ROOT_PASSWORD` | secure password | root password for every node |
+| `AUTO_DOMAIN` | `lab.local` or real domain | node FQDNs |
+| `VM_MEMORY_MB` | `4096` or more | minimum 4 GB per node |
+| `VM_ACCEL` | `kvm` | use `tcg,thread=multi` if KVM is unavailable |
+| `USE_TAP_NETWORK` | `1` for cluster | see below |
+| `BRIDGE_NAME` | e.g. `pvlab-br0` | Linux bridge name |
+| `TAP_PREFIX` | e.g. `pvlab-tap` | TAP prefix per node |
+| `CLUSTER_NAME` | `pvelab` | Proxmox cluster name |
+| `DATA_ZPOOL_NAME` | `vmdata` | data pool name |
+| `DATA_ZPOOL_DEVICES` | `sdc sdd` | disks for the second mirror |
 
 ```bash
-# Creare le directory artifact e linkare la config
+# Create artifact directories and link the config
 make init
 ```
 
 ## 2. Download ISO
 
 ```bash
-# Scarica la versione indicata in PROXMOX_ISO_VERSION (default: 9.1-1)
+# Download the version specified by PROXMOX_ISO_VERSION (default: 9.1-1)
 make iso-configured
 ```
 
-L'ISO viene salvato in `artifacts/iso/proxmox-ve_<versione>.iso`.
+The ISO is saved to `artifacts/iso/proxmox-ve_<version>.iso`.
 
-## 3. Generazione ISO unattended per ogni nodo
+## 3. Generate per-node unattended ISOs
 
 ```bash
-# Genera artifacts/autoinstall/pve01-answer.toml (pve02, pve03)
+# Generate artifacts/autoinstall/pve01-answer.toml (pve02, pve03)
 make autoinstall-scaffold
 
-# Verifica la sintassi dei file (richiede proxmox-auto-install-assistant o Docker)
+# Validate answer file syntax (requires proxmox-auto-install-assistant or Docker)
 make autoinstall-validate
 
-# Incorpora gli answer file nell'ISO → genera artifacts/iso/pve0{1,2,3}-auto.iso
+# Embed answer files into the ISO → produces artifacts/iso/pve0{1,2,3}-auto.iso
 make autoinstall-prepare
 ```
 
-> **Nota**: `make autoinstall-validate` e `make autoinstall-prepare` rilevano automaticamente se
-> `proxmox-auto-install-assistant` è installato. Se non lo è, usano Docker (Debian Trixie)
-> in modo trasparente. Si può forzare con `./bin/proxmox-lab --docker autoinstall prepare-iso ...`.
+> **Note**: `make autoinstall-validate` and `make autoinstall-prepare` automatically detect
+> whether `proxmox-auto-install-assistant` is installed. If not, they use Docker (Debian Trixie)
+> transparently. You can force Docker with `./bin/proxmox-lab --docker autoinstall prepare-iso ...`.
 
-## 4. Creazione dischi VM
+## 4. Create VM disks
 
 ```bash
 make create
 ```
 
-Crea 4 dischi qcow2 per ogni nodo sotto `artifacts/disks/`:
+Creates 4 qcow2 disks per node under `artifacts/disks/`:
 
-| Disco | Mount | Uso |
+| Disk | Guest device | Purpose |
 |---|---|---|
-| `pve0Xa1` + `pve0Xa2` | `sda` + `sdb` | root ZFS mirror (20 GB ciascuno) |
-| `pve0Xb1` + `pve0Xb2` | `sdc` + `sdd` | pool dati ZFS mirror (40 GB ciascuno) |
+| `pve0Xa1` + `pve0Xa2` | `sda` + `sdb` | root ZFS mirror (20 GB each) |
+| `pve0Xb1` + `pve0Xb2` | `sdc` + `sdd` | VM data ZFS mirror (40 GB each) |
 
-## 5. Rete TAP/bridge (solo per cluster)
+## 5. TAP/bridge networking (required for cluster)
 
-> Saltare questo passo se si vuole solo testare l'install singolo in modalità user-network.
-> Il cluster richiede TAP perché i nodi devono raggiungersi via IP.
+> Skip this step if you only want to test a single-node install with user-mode networking.
+> The cluster requires TAP because nodes must reach each other over IP.
 
-Per IP statici (consigliato, nessun DHCP server necessario), assicurarsi che `config.env` contenga:
+For static IPs (recommended — no DHCP server needed), set in `config.env`:
 
 ```bash
 USE_TAP_NETWORK=1
@@ -115,92 +115,86 @@ NODE_DNS=1.1.1.1
 sudo make network-up
 ```
 
-Crea il bridge, i TAP e assegna `BRIDGE_ADDRESS` al bridge.
+Creates the bridge, TAP interfaces, assigns `BRIDGE_ADDRESS` to the bridge, and automatically
+adds NAT/MASQUERADE iptables rules so nodes can reach the internet during the install.
 
-Per verificare:
+To verify:
 
 ```bash
-ip addr show pvlab-br0   # deve mostrare 192.168.100.1/24
+ip addr show manzolo-br0   # should show 192.168.100.1/24
 ```
 
-### NAT per accesso internet durante l'install
-
-L'installer automatico di Proxmox configura la rete e contatta NTP/DNS. Senza una rotta verso internet l'install si completa comunque, ma aggiungere il NAT evita ritardi:
+NAT rules are removed automatically by `sudo make network-down`. To manage them independently:
 
 ```bash
-# Trovare l'interfaccia di uscita: ip route get 8.8.8.8
-sudo sysctl -w net.ipv4.ip_forward=1
-sudo iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o <iface> -j MASQUERADE
-sudo iptables -A FORWARD -i <bridge> -j ACCEPT
-sudo iptables -A FORWARD -o <bridge> -j ACCEPT
+sudo make network-nat-up    # add NAT rules only
+sudo make network-nat-down  # remove NAT rules only
 ```
 
-Sostituire `<iface>` con l'interfaccia di uscita (es. `eth0`, `tun0`) e `<bridge>` con `BRIDGE_NAME`.
-
-## 6. Installazione unattended
+## 6. Unattended install
 
 ```bash
-# Tutte le VM in parallelo (richiede host con RAM/I/O sufficienti)
+# All VMs in parallel (requires a host with sufficient RAM/I/O)
 make install-headless
 
-# Una VM alla volta — consigliato su host con risorse limitate
+# One VM at a time — recommended on memory- or I/O-constrained hosts
 make install-serial
 ```
 
-`install-serial` avvia ogni VM, attende che QEMU esca (segnale di install completato),
-poi passa alla successiva. Più lento ma immune da contention su disco e RAM.
+`install-serial` launches each VM, waits for QEMU to exit (the reboot that signals install
+completion), then moves to the next. Slower but avoids disk and RAM contention.
 
-Il progresso si monitora via dimensione dei dischi:
+Monitor progress via disk size growth:
 
 ```bash
 watch -n 5 'ls -lh artifacts/disks/*.qcow2'
 ```
 
-L'install è completo quando i dischi `pve0Xa1` e `pve0Xa2` raggiungono ~2–3 GB.
+The install is complete when `pve0Xa1` and `pve0Xa2` reach ~2–3 GB.
 
-## 7. Boot dei nodi installati
+## 7. Boot the installed nodes
 
 ```bash
 make boot-headless
 ```
 
-I nodi si avviano dal disco. Seguire l'output seriale per verificare che SSH sia up:
+Nodes boot from disk. Follow the serial output to verify SSH is up:
 
 ```bash
-make vm-serial          # serial log di pve01
-./bin/proxmox-lab vm serial 2   # serial log di pve02
+make vm-serial                        # serial log of pve01
+./bin/proxmox-lab vm serial 2         # serial log of pve02
 ```
 
-## 8. Bootstrap del cluster
+## 8. Bootstrap the cluster
 
 ```bash
-# Genera artifacts/bootstrap/bootstrap-cluster.sh
+# Generate artifacts/bootstrap/bootstrap-cluster.sh
 make cluster-scaffold
 ```
 
-Il script generato esegue sul primo nodo via SSH:
+The generated script runs over SSH and:
 
-1. Scambio chiavi SSH tra i nodi: genera una chiave ed25519 su pve02 e pve03 (se assente), aggiunge le chiavi pubbliche agli `authorized_keys` di pve01 e pre-accetta il fingerprint di pve01 — necessario per `pvecm add -use_ssh 1`
-2. `pvecm create <CLUSTER_NAME>` su pve01
-3. `zpool create vmdata mirror <by-id/scsi-*_b1> <by-id/scsi-*_b2>` + registrazione storage su ogni nodo (usa percorsi stabili `by-id` per evitare problemi di enumerazione SCSI)
-4. `pvecm add pvelab1.lab.local -use_ssh 1` su pve02 e pve03
+1. **SSH key exchange**: generates an ed25519 key on pve02 and pve03 (if absent), adds their public keys to pve01's `authorized_keys`, and pre-accepts pve01's host fingerprint — required for `pvecm add -use_ssh 1`
+2. `pvecm create <CLUSTER_NAME>` on pve01
+3. `zpool create vmdata mirror <by-id/scsi-*_b1> <by-id/scsi-*_b2>` + storage registration on every node (uses stable `by-id` paths to avoid SCSI enumeration-order issues)
+4. `pvecm add pvelab1.lab.local -use_ssh 1` on pve02 and pve03
 
-Eseguire dal host (richiede SSH raggiungibile tra host e nodi, tipicamente via bridge):
+Run from the host (requires SSH access to all nodes, typically via the bridge):
 
 ```bash
 bash artifacts/bootstrap/bootstrap-cluster.sh
 ```
 
-> **Nota**: Il bootstrap usa gli FQDN dei nodi (es. `pvelab1.lab.local`). Se non si
-> vogliono aggiungere voci a `/etc/hosts`, si possono passare gli IP direttamente:
+> **Note**: the bootstrap uses node FQDNs (e.g. `pvelab1.lab.local`). If you don't want to
+> add `/etc/hosts` entries, pass IPs directly:
 > ```bash
 > FIRST_NODE_FQDN=192.168.100.101 bash artifacts/bootstrap/bootstrap-cluster.sh
 > ```
-> Oppure aggiungere le voci a `/etc/hosts` (opzionale, vedi [networking.md](networking.md)).
+> Or add entries to `/etc/hosts` (optional, see [networking.md](networking.md)).
 
-## 9. Verifica cluster
+## 9. Verify the cluster
 
-Collegarsi a pve01:
+Connect to pve01:
 
 ```bash
 ssh root@pvelab1.lab.local
@@ -209,7 +203,7 @@ zpool list
 pvesm status
 ```
 
-Output atteso:
+Expected output:
 
 ```
 Cluster information
@@ -221,23 +215,23 @@ Nodes:            3
 ...
 ```
 
-## Teardown completo
+## Teardown
 
 ```bash
 make stop
-sudo make network-down   # solo se TAP era attivo
+sudo make network-down   # removes TAP interfaces and NAT rules
 make clean-all
 ```
 
-## Struttura ZFS risultante
+## Resulting ZFS layout
 
-Ogni nodo avrà:
+Each node will have:
 
 ```
-NAME        SIZE  ALLOC   FREE  CKPOINT
-rpool      39.5G  4.20G  35.3G    -       ← root mirror sda+sdb
-vmdata     74.5G   100K  74.5G    -       ← VM pool mirror sdc+sdd
+NAME        SIZE  ALLOC   FREE
+rpool      39.5G  4.20G  35.3G    ← root mirror sda+sdb
+vmdata     74.5G   100K  74.5G    ← VM pool mirror sdc+sdd
 ```
 
-Il pool `vmdata` è registrato in Proxmox storage come `zfspool` con contenuto `images,rootdir`,
-quindi visibile nella UI sotto Datacenter → Storage.
+The `vmdata` pool is registered in Proxmox storage as a `zfspool` with content
+`images,rootdir`, visible in the UI under Datacenter → Storage.

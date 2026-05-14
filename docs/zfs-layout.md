@@ -1,7 +1,7 @@
 # ZFS Layout
 
-> Testato con **Proxmox VE 9.1-1**. Il layout dei pool ZFS è stabile tra versioni minor,
-> ma verificare sempre il comportamento dell'installer su versioni major diverse.
+> Tested with **Proxmox VE 9.1-1**. ZFS pool layout is stable across minor versions;
+> always verify installer behaviour on major version upgrades.
 
 ## Disk assignment
 

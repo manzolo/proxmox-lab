@@ -1,7 +1,7 @@
 # Cluster Formation
 
-> Testato con **Proxmox VE 9.1-1**. I comandi `pvecm` e `pvesm` sono stabili tra versioni
-> minor; verificare la compatibilità su upgrade major (es. 9.x → 10.x).
+> Tested with **Proxmox VE 9.1-1**. The `pvecm` and `pvesm` commands are stable across
+> minor versions; verify compatibility on major upgrades (e.g. 9.x → 10.x).
 
 ## Prerequisites
 
