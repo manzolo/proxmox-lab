@@ -36,13 +36,8 @@ jobs:
             apt-get install -y curl wget ca-certificates gnupg xorriso
             install -d /usr/share/keyrings
             wget -qO /usr/share/keyrings/proxmox-archive-keyring.gpg https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg
-            cat >/etc/apt/sources.list.d/pve-install-repo.sources <<EOF
-            Types: deb
-            URIs: http://download.proxmox.com/debian/pve
-            Suites: trixie
-            Components: pve-no-subscription
-            Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-            EOF
+            printf "Types: deb\nURIs: http://download.proxmox.com/debian/pve\nSuites: trixie\nComponents: pve-no-subscription\nSigned-By: /usr/share/keyrings/proxmox-archive-keyring.gpg\n" \
+              >/etc/apt/sources.list.d/pve-install-repo.sources
             apt-get update
             apt-get install -y proxmox-auto-install-assistant
             ./bin/proxmox-lab init
@@ -84,13 +79,8 @@ jobs:
             apt-get install -y curl wget ca-certificates gnupg xorriso >/dev/null
             install -d /usr/share/keyrings
             wget -qO /usr/share/keyrings/proxmox-archive-keyring.gpg https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg
-            cat >/etc/apt/sources.list.d/pve-install-repo.sources <<EOF
-            Types: deb
-            URIs: http://download.proxmox.com/debian/pve
-            Suites: trixie
-            Components: pve-no-subscription
-            Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-            EOF
+            printf "Types: deb\nURIs: http://download.proxmox.com/debian/pve\nSuites: trixie\nComponents: pve-no-subscription\nSigned-By: /usr/share/keyrings/proxmox-archive-keyring.gpg\n" \
+              >/etc/apt/sources.list.d/pve-install-repo.sources
             apt-get update >/dev/null
             apt-get install -y proxmox-auto-install-assistant >/dev/null
             ./bin/proxmox-lab --config ./config.ci.env init
