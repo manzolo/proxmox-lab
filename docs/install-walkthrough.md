@@ -1,0 +1,214 @@
+# Proxmox Lab — Installazione unattended e bootstrap cluster (passo per passo)
+
+Questa guida parte da zero e porta a 3 nodi Proxmox con:
+- root su ZFS mirror (`sda` + `sdb`)
+- pool VM su ZFS mirror (`sdc` + `sdd`)
+- cluster a 3 nodi via TAP/bridge
+
+## Prerequisiti host
+
+```bash
+# QEMU e strumenti disco
+sudo apt-get install -y qemu-system-x86 qemu-utils
+
+# TUI interattiva (opzionale)
+sudo apt-get install -y dialog
+
+# Docker — serve solo se proxmox-auto-install-assistant non è installato localmente
+# (il CLI lo usa automaticamente come fallback)
+sudo apt-get install -y docker.io
+
+# Networking TAP/bridge
+sudo apt-get install -y iproute2
+```
+
+## 1. Configurazione iniziale
+
+```bash
+cp config.env.example config.env
+```
+
+Modificare almeno questi valori in `config.env`:
+
+| Variabile | Valore consigliato | Note |
+|---|---|---|
+| `AUTO_ROOT_PASSWORD` | password sicura | password root di ogni nodo |
+| `AUTO_DOMAIN` | `lab.local` o dominio reale | FQDN dei nodi |
+| `VM_MEMORY_MB` | `4096` o più | minimo 4 GB per nodo |
+| `VM_ACCEL` | `kvm` | usare `tcg,thread=multi` se KVM non disponibile |
+| `USE_TAP_NETWORK` | `0` per install, `1` per cluster | vedere sotto |
+| `BRIDGE_NAME` | es. `pvlab-br0` | nome del bridge Linux |
+| `TAP_PREFIX` | es. `pvlab-tap` | prefisso TAP per ogni nodo |
+| `CLUSTER_NAME` | `pvelab` | nome del cluster Proxmox |
+| `DATA_ZPOOL_NAME` | `vmdata` | nome del pool dati |
+| `DATA_ZPOOL_DEVICES` | `sdc sdd` | dischi per il secondo mirror |
+
+```bash
+# Creare le directory artifact e linkare la config
+make init
+```
+
+## 2. Download ISO
+
+```bash
+# Scarica la versione indicata in PROXMOX_ISO_VERSION (default: 9.1-1)
+make iso-configured
+```
+
+L'ISO viene salvato in `artifacts/iso/proxmox-ve_<versione>.iso`.
+
+## 3. Generazione ISO unattended per ogni nodo
+
+```bash
+# Genera artifacts/autoinstall/pve01-answer.toml (pve02, pve03)
+make autoinstall-scaffold
+
+# Verifica la sintassi dei file (richiede proxmox-auto-install-assistant o Docker)
+make autoinstall-validate
+
+# Incorpora gli answer file nell'ISO → genera artifacts/iso/pve0{1,2,3}-auto.iso
+make autoinstall-prepare
+```
+
+> **Nota**: `make autoinstall-validate` e `make autoinstall-prepare` rilevano automaticamente se
+> `proxmox-auto-install-assistant` è installato. Se non lo è, usano Docker (Debian Trixie)
+> in modo trasparente. Si può forzare con `./bin/proxmox-lab --docker autoinstall prepare-iso ...`.
+
+## 4. Creazione dischi VM
+
+```bash
+make create
+```
+
+Crea 4 dischi qcow2 per ogni nodo sotto `artifacts/disks/`:
+
+| Disco | Mount | Uso |
+|---|---|---|
+| `pve0Xa1` + `pve0Xa2` | `sda` + `sdb` | root ZFS mirror (20 GB ciascuno) |
+| `pve0Xb1` + `pve0Xb2` | `sdc` + `sdd` | pool dati ZFS mirror (40 GB ciascuno) |
+
+## 5. Rete TAP/bridge (solo per cluster)
+
+> Saltare questo passo se si vuole solo testare l'install singolo in modalità user-network.
+> Il cluster richiede TAP perché i nodi devono raggiungersi via IP.
+
+```bash
+# Assicurarsi che in config.env sia impostato:
+# USE_TAP_NETWORK=1
+# BRIDGE_NAME=pvlab-br0
+# TAP_PREFIX=pvlab-tap
+
+sudo make network-up
+```
+
+Crea il bridge `pvlab-br0` e i TAP `pvlab-tap1`, `pvlab-tap2`, `pvlab-tap3`.
+
+Per verificare:
+
+```bash
+ip link show pvlab-br0
+ip link show pvlab-tap1
+```
+
+## 6. Installazione unattended
+
+```bash
+# Avvia tutte e 3 le VM in modalità headless con -no-reboot
+# QEMU esce automaticamente quando l'installer prova a riavviare
+make install-headless
+```
+
+Le VM partono in background. Il progresso si monitora via dimensione dei dischi:
+
+```bash
+# Monitoraggio continuo (Ctrl+C per uscire)
+watch -n 5 'ls -lh artifacts/disks/*.qcow2'
+```
+
+L'install è completo quando i dischi `pve0Xa1` e `pve0Xa2` raggiungono ~2–3 GB e il pid file
+scompare da `artifacts/run/`.
+
+> **Attenzione**: con risorse host limitate, avviare le VM una alla volta per evitare contention:
+>
+> ```bash
+> ./bin/proxmox-lab vm install-headless 1
+> # attendere completamento (pid sparisce da artifacts/run/)
+> ./bin/proxmox-lab vm install-headless 2
+> ./bin/proxmox-lab vm install-headless 3
+> ```
+
+## 7. Boot dei nodi installati
+
+```bash
+make boot-headless
+```
+
+I nodi si avviano dal disco. Seguire l'output seriale per verificare che SSH sia up:
+
+```bash
+make vm-serial          # serial log di pve01
+./bin/proxmox-lab vm serial 2   # serial log di pve02
+```
+
+## 8. Bootstrap del cluster
+
+```bash
+# Genera artifacts/bootstrap/bootstrap-cluster.sh
+make cluster-scaffold
+```
+
+Il script generato esegue sul primo nodo via SSH:
+
+1. `pvecm create <CLUSTER_NAME>` su pve01
+2. `zpool create vmdata mirror /dev/sdc /dev/sdd` + registrazione storage su ogni nodo
+3. `pvecm add pvelab1.lab.local -use_ssh 1` su pve02 e pve03
+
+Eseguire dal host (richiede SSH raggiungibile tra host e nodi, tipicamente via bridge):
+
+```bash
+bash artifacts/bootstrap/bootstrap-cluster.sh
+```
+
+## 9. Verifica cluster
+
+Collegarsi a pve01:
+
+```bash
+ssh root@pvelab1.lab.local
+pvecm status
+zpool list
+pvesm status
+```
+
+Output atteso:
+
+```
+Cluster information
+-------------------
+Name:             pvelab
+Config Version:   3
+Transport:        knet
+Nodes:            3
+...
+```
+
+## Teardown completo
+
+```bash
+make stop
+sudo make network-down   # solo se TAP era attivo
+make clean-all
+```
+
+## Struttura ZFS risultante
+
+Ogni nodo avrà:
+
+```
+NAME        SIZE  ALLOC   FREE  CKPOINT
+rpool      39.5G  4.20G  35.3G    -       ← root mirror sda+sdb
+vmdata     74.5G   100K  74.5G    -       ← VM pool mirror sdc+sdd
+```
+
+Il pool `vmdata` è registrato in Proxmox storage come `zfspool` con contenuto `images,rootdir`,
+quindi visibile nella UI sotto Datacenter → Storage.
