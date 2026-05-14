@@ -1,0 +1,28 @@
+# Autoinstall profile: ZFS root mirror + static IP networking.
+# Set AUTOINSTALL_PROFILE=zfs-mirror-static and configure the following in config.env:
+#   NODE_FIRST_IP=192.168.100.101   # node 1 IP; node N gets .101+(N-1)
+#   NODE_PREFIX_LEN=24
+#   NODE_GATEWAY=192.168.100.1
+#   NODE_DNS=1.1.1.1
+#   BRIDGE_ADDRESS=192.168.100.1/24  # assigned to the host bridge by network-up
+
+[global]
+keyboard = "en-us"
+country = "it"
+fqdn = "{{FQDN}}"
+mailto = "{{MAILTO}}"
+timezone = "Europe/Rome"
+root-password = "{{ROOT_PASSWORD}}"
+
+[network]
+source = "from-answer"
+
+[network.if-defaults]
+ip = "{{NODE_IP}}/{{NODE_PREFIX_LEN}}"
+gateway = "{{NODE_GATEWAY}}"
+dns = "{{NODE_DNS}}"
+
+[disk-setup]
+filesystem = "zfs"
+zfs.raid = "raid1"
+disk-list = ["sda", "sdb"]

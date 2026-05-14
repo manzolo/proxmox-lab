@@ -49,12 +49,34 @@ Each VM gets a deterministic MAC: `52:54:00:ac:11:<index>` (e.g. node 1 = `52:54
 
 ## Node addressing
 
-With `[network] source = "from-dhcp"` in the answer file (the default), each node requests an address via DHCP during install and on every boot. If there is no DHCP server on the bridge, the install will stall waiting for a lease.
+### Static IPs (recommended for standalone labs)
 
-Options:
-- Set `DHCP_ON_BRIDGE=1` and enslave a NIC to let the bridge act as an uplink to an existing DHCP server
-- Run `dnsmasq` or another DHCP server on the bridge
-- Change the answer file to use a static address (`source = "from-answer"` with `[network.if-defaults]`)
+Use `AUTOINSTALL_PROFILE=zfs-mirror-static` in `config.env`. Set:
+
+```bash
+AUTOINSTALL_PROFILE=zfs-mirror-static
+NODE_FIRST_IP=192.168.100.101   # node 1; node N gets .101+(N-1)
+NODE_PREFIX_LEN=24
+NODE_GATEWAY=192.168.100.1
+NODE_DNS=1.1.1.1
+BRIDGE_ADDRESS=192.168.100.1/24  # assigned to host bridge by network-up
+```
+
+`make autoinstall-scaffold` bakes a static IP into each node's answer file at ISO build time. `sudo make network-up` assigns `BRIDGE_ADDRESS` to the bridge so the host can reach all nodes. No external DHCP server required.
+
+Add node hostnames to `/etc/hosts` on the host so SSH and cluster bootstrap work:
+
+```
+192.168.100.101  pvelab1.lab.local  pvelab1
+192.168.100.102  pvelab2.lab.local  pvelab2
+192.168.100.103  pvelab3.lab.local  pvelab3
+```
+
+### DHCP
+
+With `AUTOINSTALL_PROFILE=zfs-mirror` (the default), each node requests an address via DHCP during install and on every boot. Options:
+- Set `DHCP_ON_BRIDGE=1` and enslave a physical NIC to let the bridge uplink to an existing DHCP server
+- Run `dnsmasq` on the bridge with static leases keyed on the deterministic MAC addresses (`52:54:00:ac:11:0N`)
 
 ## Firewall / iptables
 

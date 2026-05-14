@@ -52,6 +52,11 @@ DATA_STORAGE_ID="vmdata"
 DATA_STORAGE_CONTENT="images,rootdir"
 USE_DOCKER_AUTOINSTALL=0
 DOCKER_AUTOINSTALL_IMAGE="debian:trixie"
+NODE_FIRST_IP=""
+NODE_PREFIX_LEN="24"
+NODE_GATEWAY=""
+NODE_DNS="1.1.1.1"
+BRIDGE_ADDRESS=""
 
 declare -a CONFIG_OVERRIDES=()
 
@@ -648,6 +653,10 @@ network_up() {
         ip link set dev "${INTERFACE_NAME}" up
     fi
 
+    if [[ -n "${BRIDGE_ADDRESS}" ]]; then
+        ip addr replace "${BRIDGE_ADDRESS}" dev "${BRIDGE_NAME}"
+    fi
+
     local index tap_name
     for ((index = 1; index <= NUM_VMS; index++)); do
         tap_name="${TAP_PREFIX}${index}"
@@ -1136,16 +1145,27 @@ autoinstall_scaffold() {
 
     autoinstall_scaffold_one() {
         local index="$1"
-        local output fqdn
+        local output fqdn node_ip
         output="$(node_answer_path "${index}")"
         fqdn="$(node_fqdn "${index}")"
         if [[ -f "${output}" ]]; then
             die "${output} already exists"
         fi
+        node_ip=""
+        if [[ -n "${NODE_FIRST_IP}" ]]; then
+            local ip_base ip_last
+            ip_base="${NODE_FIRST_IP%.*}"
+            ip_last="${NODE_FIRST_IP##*.}"
+            node_ip="${ip_base}.$((ip_last + index - 1))"
+        fi
         sed \
             -e "s/{{FQDN}}/${fqdn}/g" \
             -e "s/{{ROOT_PASSWORD}}/${AUTO_ROOT_PASSWORD}/g" \
             -e "s/{{MAILTO}}/${AUTO_MAILTO}/g" \
+            -e "s/{{NODE_IP}}/${node_ip}/g" \
+            -e "s/{{NODE_PREFIX_LEN}}/${NODE_PREFIX_LEN}/g" \
+            -e "s/{{NODE_GATEWAY}}/${NODE_GATEWAY}/g" \
+            -e "s/{{NODE_DNS}}/${NODE_DNS}/g" \
             "${source_template}" > "${output}"
         log "created ${output}"
     }
