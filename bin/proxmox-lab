@@ -22,7 +22,7 @@ NUM_VMS=3
 VM_PREFIX="pve0"
 VM_MEMORY_MB=4096
 VM_CORES=2
-VM_MACHINE="pc-q35-7.0"
+VM_MACHINE="q35"
 VM_ACCEL="kvm"
 VM_CPU="host,migratable=on"
 VM_DISPLAY="gtk"
