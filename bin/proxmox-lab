@@ -1,0 +1,766 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+CONFIG_FILE="${PROXMOX_LAB_CONFIG:-${REPO_ROOT}/config.env}"
+EXAMPLE_CONFIG_FILE="${REPO_ROOT}/config.env.example"
+
+ARTIFACTS_DIR="${REPO_ROOT}/artifacts"
+ISO_DIR="${ARTIFACTS_DIR}/iso"
+DISKS_DIR="${ARTIFACTS_DIR}/disks"
+LOGS_DIR="${ARTIFACTS_DIR}/logs"
+RUN_DIR="${ARTIFACTS_DIR}/run"
+AUTO_DIR="${ARTIFACTS_DIR}/autoinstall"
+TEMPLATE_DIR="${REPO_ROOT}/templates"
+
+NUM_VMS=3
+VM_PREFIX="pve0"
+VM_MEMORY_MB=4096
+VM_CORES=2
+VM_MACHINE="pc-q35-7.0"
+VM_CPU="host,migratable=on"
+VM_DISPLAY="gtk"
+VM_NET_DEVICE="virtio-net-pci"
+DISK_LAYOUT="a1:20G a2:20G b1:40G b2:40G"
+USE_TAP_NETWORK=0
+BRIDGE_NAME="manzolo-br0"
+INTERFACE_NAME=""
+TAP_PREFIX="manzolo-tap"
+TAP_USER=""
+DHCP_ON_BRIDGE=0
+PROXMOX_ISO_VERSION="9.1-1"
+ISO_URL_INDEX="https://download.proxmox.com/iso/"
+ISO_URL_FALLBACKS="https://de2.cdn.proxmox.com/iso/ https://de.cdn.proxmox.com/iso/ https://enterprise.proxmox.com/iso/"
+ALLOW_INSECURE_TLS=0
+QEMU_BIN="qemu-system-x86_64"
+QEMU_IMG_BIN="qemu-img"
+AUTO_HOSTNAME_PREFIX="pvelab"
+AUTO_DOMAIN="lab.local"
+
+declare -a CONFIG_OVERRIDES=()
+
+log() {
+    printf '[proxmox-lab] %s\n' "$*"
+}
+
+warn() {
+    printf '[proxmox-lab] warning: %s\n' "$*" >&2
+}
+
+die() {
+    printf '[proxmox-lab] error: %s\n' "$*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<'EOF'
+Usage:
+  proxmox-lab menu
+  proxmox-lab tui
+  proxmox-lab init
+  proxmox-lab status
+  proxmox-lab iso current
+  proxmox-lab iso fetch [latest|VERSION|URL]
+  proxmox-lab network up|down|status
+  proxmox-lab vm create
+  proxmox-lab vm start [all|INDEX]
+  proxmox-lab vm stop [all|INDEX]
+  proxmox-lab clean disks|logs|run|all
+  proxmox-lab autoinstall scaffold
+  proxmox-lab autoinstall prepare-iso SOURCE_ISO [ANSWER_FILE]
+
+Global options:
+  --config PATH           Use a specific config file.
+  --set KEY=VALUE         Override a config value for the current invocation.
+EOF
+}
+
+ensure_dirs() {
+    mkdir -p "${ARTIFACTS_DIR}" "${ISO_DIR}" "${DISKS_DIR}" "${LOGS_DIR}" "${RUN_DIR}" "${AUTO_DIR}"
+}
+
+load_config() {
+    if [[ -f "${CONFIG_FILE}" ]]; then
+        # shellcheck disable=SC1090
+        source "${CONFIG_FILE}"
+    fi
+
+    local assignment key value
+    if ((${#CONFIG_OVERRIDES[@]} > 0)); then
+        for assignment in "${CONFIG_OVERRIDES[@]}"; do
+            key="${assignment%%=*}"
+            value="${assignment#*=}"
+            printf -v "${key}" '%s' "${value}"
+            export "${key}=${value}"
+        done
+    fi
+
+    [[ -n "${TAP_USER}" ]] || TAP_USER="${SUDO_USER:-${USER}}"
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+require_root() {
+    [[ "${EUID}" -eq 0 ]] || die "this command must run as root"
+}
+
+curl_args() {
+    local -a args
+    args=(-fL --progress-bar)
+    if [[ "${ALLOW_INSECURE_TLS}" -eq 1 ]]; then
+        warn "TLS certificate verification disabled for curl because ALLOW_INSECURE_TLS=1"
+        args+=(-k)
+    fi
+    printf '%s\n' "${args[@]}"
+}
+
+iso_candidate_bases() {
+    local base
+    printf '%s\n' "${ISO_URL_INDEX}"
+    for base in ${ISO_URL_FALLBACKS}; do
+        if [[ "${base}" != "${ISO_URL_INDEX}" ]]; then
+            printf '%s\n' "${base}"
+        fi
+    done
+}
+
+curl_capture() {
+    local output_file="$1"
+    shift
+
+    if "$@" >"${output_file}" 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+probe_iso_index() {
+    local base_url="$1"
+    local output_file="$2"
+    local -a args
+
+    mapfile -t args < <(curl_args)
+    curl_capture "${output_file}" curl "${args[@]}" -sS "${base_url}"
+}
+
+download_iso_file() {
+    local url="$1"
+    local target="$2"
+    local output_file="$3"
+    local -a args
+
+    mapfile -t args < <(curl_args)
+    curl_capture "${output_file}" curl "${args[@]}" -o "${target}" "${url}"
+}
+
+first_repo_iso() {
+    find "${REPO_ROOT}" -maxdepth 1 -type f -name 'proxmox-ve_*.iso' | sort | head -n 1
+}
+
+vm_name() {
+    local index="$1"
+    printf '%s%d' "${VM_PREFIX}" "${index}"
+}
+
+vm_mac() {
+    local index="$1"
+    printf '52:54:00:ac:11:%02x' "${index}"
+}
+
+disk_path() {
+    local index="$1"
+    local suffix="$2"
+    printf '%s/%s%s.qcow2' "${DISKS_DIR}" "$(vm_name "${index}")" "${suffix}"
+}
+
+current_iso_path() {
+    printf '%s/current.iso' "${ISO_DIR}"
+}
+
+resolve_iso_path() {
+    local current
+    current="$(current_iso_path)"
+
+    if [[ -L "${current}" || -f "${current}" ]]; then
+        printf '%s' "${current}"
+        return 0
+    fi
+
+    if compgen -G "${REPO_ROOT}/proxmox-ve_*.iso" >/dev/null; then
+        first_repo_iso
+        return 0
+    fi
+
+    return 1
+}
+
+latest_iso_filename() {
+    local html base_url
+    local tmp_output
+    require_command curl
+    tmp_output="$(mktemp)"
+
+    while IFS= read -r base_url; do
+        if probe_iso_index "${base_url}" "${tmp_output}"; then
+            if [[ "${base_url}" != "${ISO_URL_INDEX}" ]]; then
+                warn "using fallback ISO index ${base_url}"
+            fi
+            html="$(cat "${tmp_output}")"
+            rm -f "${tmp_output}"
+            printf '%s\n' "${html}" \
+                | grep -Eo 'proxmox-ve_[0-9][^"]+\.iso' \
+                | sort -V \
+                | tail -n 1
+            return 0
+        fi
+        warn "failed ISO index ${base_url}: $(tail -n 1 "${tmp_output}")"
+    done < <(iso_candidate_bases)
+
+    rm -f "${tmp_output}"
+    die "failed to query any Proxmox ISO index"
+}
+
+iso_fetch() {
+    ensure_dirs
+
+    local selector="${1:-latest}"
+    local filename url target base_url
+    local tmp_output
+
+    if [[ "${selector}" =~ ^https?:// ]]; then
+        url="${selector}"
+        filename="${url##*/}"
+    elif [[ "${selector}" == "latest" ]]; then
+        filename="$(latest_iso_filename)"
+        [[ -n "${filename}" ]] || die "could not determine latest Proxmox VE ISO"
+        url="${ISO_URL_INDEX%/}/${filename}"
+    elif [[ "${selector}" == "configured" ]]; then
+        filename="proxmox-ve_${PROXMOX_ISO_VERSION}.iso"
+        url="${ISO_URL_INDEX%/}/${filename}"
+    else
+        filename="proxmox-ve_${selector}.iso"
+        url="${ISO_URL_INDEX%/}/${filename}"
+    fi
+
+    target="${ISO_DIR}/${filename}"
+    require_command curl
+    tmp_output="$(mktemp)"
+
+    if [[ "${selector}" =~ ^https?:// ]]; then
+        log "downloading ${url}"
+        if ! download_iso_file "${url}" "${target}" "${tmp_output}"; then
+            local last_line
+            last_line="$(tail -n 1 "${tmp_output}")"
+            rm -f "${tmp_output}"
+            die "failed to download ${url}: ${last_line}"
+        fi
+        rm -f "${tmp_output}"
+        ln -sfn "${target}" "$(current_iso_path)"
+        log "current ISO -> ${target}"
+        return 0
+    fi
+
+    while IFS= read -r base_url; do
+        url="${base_url%/}/${filename}"
+        log "downloading ${url}"
+        if download_iso_file "${url}" "${target}" "${tmp_output}"; then
+            if [[ "${base_url}" != "${ISO_URL_INDEX}" ]]; then
+                warn "download succeeded via fallback ${base_url}"
+            fi
+            rm -f "${tmp_output}"
+            ln -sfn "${target}" "$(current_iso_path)"
+            log "current ISO -> ${target}"
+            return 0
+        fi
+        warn "failed download ${url}: $(tail -n 1 "${tmp_output}")"
+    done < <(iso_candidate_bases)
+
+    rm -f "${tmp_output}"
+    die "failed to download ${filename} from all configured ISO endpoints"
+}
+
+iso_current() {
+    local iso
+    if iso="$(resolve_iso_path)"; then
+        printf '%s\n' "${iso}"
+    else
+        die "no ISO configured or downloaded"
+    fi
+}
+
+init_workspace() {
+    ensure_dirs
+    if [[ ! -f "${CONFIG_FILE}" ]]; then
+        cp "${EXAMPLE_CONFIG_FILE}" "${CONFIG_FILE}"
+        log "created ${CONFIG_FILE}"
+    else
+        log "config already present: ${CONFIG_FILE}"
+    fi
+    if [[ ! -e "$(current_iso_path)" ]] && compgen -G "${REPO_ROOT}/proxmox-ve_*.iso" >/dev/null; then
+        ln -sfn "$(first_repo_iso)" "$(current_iso_path)"
+        log "linked existing ISO to $(current_iso_path)"
+    fi
+}
+
+status() {
+    ensure_dirs
+    local iso
+    printf 'Config: %s\n' "${CONFIG_FILE}"
+    printf 'VMs: %s prefix=%s memory=%sMB cores=%s\n' "${NUM_VMS}" "${VM_PREFIX}" "${VM_MEMORY_MB}" "${VM_CORES}"
+    printf 'Disks dir: %s\n' "${DISKS_DIR}"
+    printf 'Logs dir: %s\n' "${LOGS_DIR}"
+    printf 'Network mode: %s\n' "$([[ "${USE_TAP_NETWORK}" -eq 1 ]] && printf 'tap' || printf 'user')"
+    if iso="$(resolve_iso_path 2>/dev/null)"; then
+        printf 'ISO: %s\n' "${iso}"
+    else
+        printf 'ISO: missing\n'
+    fi
+    printf 'Disk count: '
+    find "${DISKS_DIR}" -maxdepth 1 -type f -name '*.qcow2' | wc -l
+    printf 'Running pid files: '
+    find "${RUN_DIR}" -maxdepth 1 -type f -name '*.pid' | wc -l
+}
+
+create_disks() {
+    ensure_dirs
+    require_command "${QEMU_IMG_BIN}"
+
+    local index layout suffix size path
+    for ((index = 1; index <= NUM_VMS; index++)); do
+        for layout in ${DISK_LAYOUT}; do
+            suffix="${layout%%:*}"
+            size="${layout#*:}"
+            path="$(disk_path "${index}" "${suffix}")"
+            if [[ -f "${path}" ]]; then
+                log "skip existing disk ${path}"
+            else
+                log "create ${path} (${size})"
+                "${QEMU_IMG_BIN}" create -f qcow2 -o preallocation=off "${path}" "${size}" >/dev/null
+            fi
+        done
+    done
+}
+
+start_vm() {
+    local index="$1"
+    ensure_dirs
+    require_command "${QEMU_BIN}"
+
+    local iso vm pid_file log_file
+    local layout suffix netdev_arg device_arg
+    local -a qemu_args
+    iso="$(resolve_iso_path)" || die "no ISO available; run 'proxmox-lab iso fetch latest' first"
+    vm="$(vm_name "${index}")"
+    pid_file="${RUN_DIR}/${vm}.pid"
+    log_file="${LOGS_DIR}/${vm}.log"
+
+    if [[ -f "${pid_file}" ]] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then
+        log "${vm} already running"
+        return 0
+    fi
+
+    qemu_args=(
+        -name "${vm}"
+        -machine "${VM_MACHINE},usb=off,vmport=off,dump-guest-core=off"
+        -accel kvm
+        -cpu "${VM_CPU}"
+        -device virtio-scsi-pci
+    )
+
+    for layout in ${DISK_LAYOUT}; do
+        suffix="${layout%%:*}"
+        [[ -f "$(disk_path "${index}" "${suffix}")" ]] || die "missing disk $(disk_path "${index}" "${suffix}"); run 'proxmox-lab vm create'"
+        qemu_args+=(
+            -drive "file=$(disk_path "${index}" "${suffix}"),if=none,id=drive_${index}_${suffix},format=qcow2"
+            -device "scsi-hd,drive=drive_${index}_${suffix}"
+        )
+    done
+
+    if [[ "${USE_TAP_NETWORK}" -eq 1 ]]; then
+        netdev_arg="tap,id=net${index},ifname=${TAP_PREFIX}${index},script=no,downscript=no"
+    else
+        netdev_arg="user,id=net${index},hostname=${vm}"
+    fi
+    device_arg="${VM_NET_DEVICE},netdev=net${index},mac=$(vm_mac "${index}")"
+
+    qemu_args+=(
+        -m "${VM_MEMORY_MB}"
+        -boot order=d
+        -drive "file=${iso},media=cdrom,if=ide,index=0"
+        -netdev "${netdev_arg}"
+        -device "${device_arg}"
+        -smp "cores=${VM_CORES}"
+        -vga std
+        -display "${VM_DISPLAY}"
+    )
+
+    log "starting ${vm}"
+    nohup "${QEMU_BIN}" "${qemu_args[@]}" >"${log_file}" 2>&1 &
+
+    echo $! > "${pid_file}"
+    log "${vm} pid=$(cat "${pid_file}") log=${log_file}"
+}
+
+stop_vm() {
+    local index="$1"
+    local vm pid_file pid
+    vm="$(vm_name "${index}")"
+    pid_file="${RUN_DIR}/${vm}.pid"
+
+    if [[ ! -f "${pid_file}" ]]; then
+        log "no pid file for ${vm}"
+        return 0
+    fi
+
+    pid="$(cat "${pid_file}")"
+    if kill -0 "${pid}" 2>/dev/null; then
+        log "stopping ${vm} (${pid})"
+        kill "${pid}"
+    fi
+    rm -f "${pid_file}"
+}
+
+network_status() {
+    if ip link show "${BRIDGE_NAME}" >/dev/null 2>&1; then
+        printf 'bridge %s: present\n' "${BRIDGE_NAME}"
+    else
+        printf 'bridge %s: absent\n' "${BRIDGE_NAME}"
+    fi
+
+    local index
+    for ((index = 1; index <= NUM_VMS; index++)); do
+        if ip link show "${TAP_PREFIX}${index}" >/dev/null 2>&1; then
+            printf 'tap %s%s: present\n' "${TAP_PREFIX}" "${index}"
+        else
+            printf 'tap %s%s: absent\n' "${TAP_PREFIX}" "${index}"
+        fi
+    done
+}
+
+network_up() {
+    require_root
+    require_command ip
+    ensure_dirs
+
+    if ! ip link show "${BRIDGE_NAME}" >/dev/null 2>&1; then
+        ip link add name "${BRIDGE_NAME}" type bridge
+    fi
+    ip link set dev "${BRIDGE_NAME}" up
+
+    if [[ -n "${INTERFACE_NAME}" ]]; then
+        ip addr flush dev "${INTERFACE_NAME}" || true
+        ip link set dev "${INTERFACE_NAME}" master "${BRIDGE_NAME}"
+        ip link set dev "${INTERFACE_NAME}" up
+    fi
+
+    local index tap_name
+    for ((index = 1; index <= NUM_VMS; index++)); do
+        tap_name="${TAP_PREFIX}${index}"
+        if ! ip link show "${tap_name}" >/dev/null 2>&1; then
+            ip tuntap add dev "${tap_name}" mode tap user "${TAP_USER}"
+        fi
+        ip link set dev "${tap_name}" master "${BRIDGE_NAME}"
+        ip link set dev "${tap_name}" up
+    done
+
+    if [[ "${DHCP_ON_BRIDGE}" -eq 1 ]]; then
+        require_command dhclient
+        dhclient -v "${BRIDGE_NAME}"
+    fi
+}
+
+network_down() {
+    require_root
+    require_command ip
+
+    local index tap_name
+    for ((index = 1; index <= NUM_VMS; index++)); do
+        tap_name="${TAP_PREFIX}${index}"
+        ip link set dev "${tap_name}" down 2>/dev/null || true
+        ip tuntap del dev "${tap_name}" mode tap 2>/dev/null || true
+    done
+
+    if [[ -n "${INTERFACE_NAME}" ]]; then
+        ip link set dev "${INTERFACE_NAME}" nomaster 2>/dev/null || true
+        ip link set dev "${INTERFACE_NAME}" up 2>/dev/null || true
+        if [[ "${DHCP_ON_BRIDGE}" -eq 1 ]] && command -v dhclient >/dev/null 2>&1; then
+            dhclient -v "${INTERFACE_NAME}" || true
+        fi
+    fi
+
+    ip link set dev "${BRIDGE_NAME}" down 2>/dev/null || true
+    ip link delete "${BRIDGE_NAME}" type bridge 2>/dev/null || true
+}
+
+clean_disks() {
+    ensure_dirs
+    find "${DISKS_DIR}" -maxdepth 1 -type f -name '*.qcow2' -delete
+    log "removed disk artifacts from ${DISKS_DIR}"
+}
+
+clean_logs() {
+    ensure_dirs
+    find "${LOGS_DIR}" -maxdepth 1 -type f -delete
+    log "removed logs from ${LOGS_DIR}"
+}
+
+clean_run() {
+    ensure_dirs
+    find "${RUN_DIR}" -maxdepth 1 -type f -delete
+    log "removed pid files from ${RUN_DIR}"
+}
+
+clean_all() {
+    clean_logs
+    clean_run
+    clean_disks
+    if [[ "${USE_TAP_NETWORK}" -eq 1 ]]; then
+        warn "TAP mode enabled; run 'sudo proxmox-lab network down' if bridge cleanup is also required"
+    fi
+}
+
+press_enter() {
+    read -r -p "Press Enter to continue..." _
+}
+
+tui_run() {
+    if ( "$@" ); then
+        :
+    else
+        warn "command failed: $*"
+    fi
+    press_enter
+}
+
+tui_draw_header() {
+    clear
+    printf 'Proxmox Lab TUI\n'
+    printf '================\n'
+    printf 'Config: %s\n' "${CONFIG_FILE}"
+    printf 'Mode: %s\n\n' "$([[ "${USE_TAP_NETWORK}" -eq 1 ]] && printf 'tap' || printf 'user')"
+}
+
+tui() {
+    local choice iso_path
+
+    while true; do
+        tui_draw_header
+        if iso_path="$(resolve_iso_path 2>/dev/null)"; then
+            printf 'ISO: %s\n\n' "${iso_path}"
+        else
+            printf 'ISO: missing\n\n'
+        fi
+
+        cat <<'EOF'
+1. Status
+2. Init workspace
+3. Fetch latest ISO
+4. Fetch configured ISO
+5. Create disks
+6. Start all VMs
+7. Stop all VMs
+8. Network up
+9. Network down
+10. Autoinstall scaffold
+11. Clean disks
+12. Clean all
+q. Quit
+EOF
+        printf '\nSelect: '
+        read -r choice
+
+        case "${choice}" in
+            1) tui_run status ;;
+            2) tui_run init_workspace ;;
+            3) tui_run iso_fetch latest ;;
+            4) tui_run iso_fetch configured ;;
+            5) tui_run create_disks ;;
+            6) tui_run start_all ;;
+            7) tui_run stop_all ;;
+            8) tui_run network_up ;;
+            9) tui_run network_down ;;
+            10) tui_run autoinstall_scaffold ;;
+            11) tui_run clean_disks ;;
+            12) tui_run clean_all ;;
+            q|Q) break ;;
+            *) warn "invalid choice"; press_enter ;;
+        esac
+    done
+}
+
+autoinstall_scaffold() {
+    ensure_dirs
+    local output="${AUTO_DIR}/answer.toml"
+    local fqdn="${AUTO_HOSTNAME_PREFIX}1.${AUTO_DOMAIN}"
+    if [[ -f "${output}" ]]; then
+        die "${output} already exists"
+    fi
+    sed "s/{{FQDN}}/${fqdn}/g" "${TEMPLATE_DIR}/answer.toml.example" > "${output}"
+    log "created ${output}"
+}
+
+autoinstall_prepare_iso() {
+    ensure_dirs
+    require_command proxmox-auto-install-assistant
+
+    local source_iso="${1:-}"
+    local answer_file="${2:-${AUTO_DIR}/answer.toml}"
+    local target
+
+    [[ -n "${source_iso}" ]] || die "source ISO path required"
+    [[ -f "${source_iso}" ]] || die "missing source ISO: ${source_iso}"
+    [[ -f "${answer_file}" ]] || die "missing answer file: ${answer_file}"
+
+    target="${ISO_DIR}/$(basename "${source_iso%.iso}")-auto.iso"
+    proxmox-auto-install-assistant prepare-iso "${source_iso}" \
+        --fetch-from iso \
+        --answer-file "${answer_file}" \
+        --output "${target}"
+    ln -sfn "${target}" "$(current_iso_path)"
+    log "prepared automated-install ISO ${target}"
+}
+
+menu() {
+    PS3='Select action: '
+    select action in \
+        "status" \
+        "init" \
+        "iso fetch latest" \
+        "vm create" \
+        "vm start" \
+        "vm stop" \
+        "clean disks" \
+        "clean all" \
+        "network up" \
+        "network down" \
+        "quit"; do
+        case "${action}" in
+            "status") status ;;
+            "init") init_workspace ;;
+            "iso fetch latest") iso_fetch latest ;;
+            "vm create") create_disks ;;
+            "vm start") start_all ;;
+            "vm stop") stop_all ;;
+            "clean disks") clean_disks ;;
+            "clean all") clean_all ;;
+            "network up") network_up ;;
+            "network down") network_down ;;
+            "quit") break ;;
+            *) warn "invalid choice" ;;
+        esac
+    done
+}
+
+start_all() {
+    local index
+    for ((index = 1; index <= NUM_VMS; index++)); do
+        start_vm "${index}"
+    done
+}
+
+stop_all() {
+    local index
+    for ((index = 1; index <= NUM_VMS; index++)); do
+        stop_vm "${index}"
+    done
+}
+
+parse_global_options() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --config)
+                CONFIG_FILE="$2"
+                shift 2
+                ;;
+            --set)
+                CONFIG_OVERRIDES+=("$2")
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    REMAINING_ARGS=("$@")
+}
+
+main() {
+    parse_global_options "$@"
+    load_config
+
+    set -- "${REMAINING_ARGS[@]:-}"
+    local command="${1:-menu}"
+    shift || true
+
+    case "${command}" in
+        menu) menu ;;
+        tui) tui ;;
+        init) init_workspace ;;
+        status) status ;;
+        iso)
+            case "${1:-}" in
+                fetch) shift; iso_fetch "${1:-latest}" ;;
+                current) iso_current ;;
+                *) die "usage: proxmox-lab iso fetch [latest|VERSION|URL] | current" ;;
+            esac
+            ;;
+        network)
+            case "${1:-}" in
+                up) network_up ;;
+                down) network_down ;;
+                status) network_status ;;
+                *) die "usage: proxmox-lab network up|down|status" ;;
+            esac
+            ;;
+        vm)
+            case "${1:-}" in
+                create) create_disks ;;
+                start)
+                    case "${2:-all}" in
+                        all) start_all ;;
+                        *) start_vm "${2}" ;;
+                    esac
+                    ;;
+                stop)
+                    case "${2:-all}" in
+                        all) stop_all ;;
+                        *) stop_vm "${2}" ;;
+                    esac
+                    ;;
+                *) die "usage: proxmox-lab vm create|start [all|INDEX]|stop [all|INDEX]" ;;
+            esac
+            ;;
+        clean)
+            case "${1:-}" in
+                disks) clean_disks ;;
+                logs) clean_logs ;;
+                run) clean_run ;;
+                all) clean_all ;;
+                *) die "usage: proxmox-lab clean disks|logs|run|all" ;;
+            esac
+            ;;
+        autoinstall)
+            case "${1:-}" in
+                scaffold) autoinstall_scaffold ;;
+                prepare-iso) shift; autoinstall_prepare_iso "${1:-}" "${2:-}" ;;
+                *) die "usage: proxmox-lab autoinstall scaffold|prepare-iso SOURCE_ISO [ANSWER_FILE]" ;;
+            esac
+            ;;
+        *)
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

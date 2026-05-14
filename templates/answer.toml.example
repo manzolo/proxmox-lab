@@ -1,0 +1,20 @@
+# Starter file for `proxmox-auto-install-assistant`.
+# Review against the official Proxmox automated installation docs before use.
+
+[global]
+keyboard = "en-us"
+country = "it"
+fqdn = "{{FQDN}}"
+mailto = "root@localhost"
+timezone = "Europe/Rome"
+root_password = "CHANGEME"
+
+[network]
+source = "from-dhcp"
+
+[disk-setup]
+filesystem = "ext4"
+disk_list = ["sda"]
+
+[post-installation-webhook]
+url = "http://127.0.0.1:8080/hooks/proxmox"

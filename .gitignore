@@ -1,1 +1,5 @@
-proxmox-ve_8.1-2.iso
+artifacts/
+config.env
+*.qcow2
+*.pid
+*.log
