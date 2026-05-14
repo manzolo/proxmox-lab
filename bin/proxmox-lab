@@ -592,6 +592,41 @@ dialog_show_text() {
     fi
 }
 
+dialog_show_infobox() {
+    local title="$1"
+    local message="$2"
+    local ui
+
+    ui="$(dialog_bin)" || return 1
+    if [[ "${ui}" == "dialog" ]]; then
+        dialog --backtitle "$(dialog_backtitle)" --title "${title}" --infobox "${message}" 10 80
+    else
+        whiptail --backtitle "$(dialog_backtitle)" --title "${title}" --infobox "${message}" 10 80
+    fi
+}
+
+dialog_run_message() {
+    local title="$1"
+
+    case "${title}" in
+        "Fetch Latest ISO"|"Fetch Configured ISO")
+            printf 'Resolving ISO source and downloading if needed.\nThis can take a while for large images.\n\nPlease wait...'
+            ;;
+        "Start All VMs")
+            printf 'Starting virtual machines.\n\nPlease wait...'
+            ;;
+        "Network Up"|"Network Down")
+            printf 'Updating host network state.\n\nPlease wait...'
+            ;;
+        "Autoinstall Validate")
+            printf 'Validating the Proxmox autoinstall answer file.\n\nPlease wait...'
+            ;;
+        *)
+            printf 'Running command.\n\nPlease wait...'
+            ;;
+    esac
+}
+
 dialog_run() {
     local title="$1"
     shift
@@ -599,6 +634,10 @@ dialog_run() {
     local output_file status_file status
     output_file="$(mktemp)"
     status_file="$(mktemp)"
+
+    if [[ -t 0 && -t 1 ]]; then
+        dialog_show_infobox "${title}" "$(dialog_run_message "${title}")" || true
+    fi
 
     if tui_capture "${output_file}" "$@"; then
         printf '0' >"${status_file}"
@@ -619,11 +658,18 @@ dialog_run() {
 
 iso_file_summary() {
     local target="$1"
-    local size mtime
+    local resolved size mtime
 
-    size="$(stat -c '%s' "${target}" 2>/dev/null || printf '?')"
-    mtime="$(stat -c '%y' "${target}" 2>/dev/null | cut -d'.' -f1 || printf '?')"
-    printf 'Path: %s\nSize: %s bytes\nModified: %s' "${target}" "${size}" "${mtime}"
+    resolved="$(readlink -f "${target}" 2>/dev/null || printf '%s' "${target}")"
+
+    size="$(stat -c '%s' "${resolved}" 2>/dev/null || printf '?')"
+    mtime="$(stat -c '%y' "${resolved}" 2>/dev/null | cut -d'.' -f1 || printf '?')"
+
+    if [[ "${resolved}" != "${target}" ]]; then
+        printf 'Link: %s\nTarget: %s\nSize: %s bytes\nModified: %s' "${target}" "${resolved}" "${size}" "${mtime}"
+    else
+        printf 'Path: %s\nSize: %s bytes\nModified: %s' "${resolved}" "${size}" "${mtime}"
+    fi
 }
 
 confirm_iso_refetch_basic() {
@@ -729,6 +775,7 @@ tui_basic() {
 11. Autoinstall validate
 12. Clean disks
 13. Clean all
+14. Exit
 q. Quit
 EOF
         printf '\nSelect: '
@@ -748,6 +795,7 @@ EOF
             11) tui_run autoinstall_validate ;;
             12) tui_run clean_disks ;;
             13) tui_run clean_all ;;
+            14) break ;;
             q|Q) break ;;
             *) warn "invalid choice"; press_enter ;;
         esac
@@ -781,7 +829,8 @@ dialog_menu_loop() {
                     10 "Autoinstall scaffold" \
                     11 "Autoinstall validate" \
                     12 "Clean disks" \
-                    13 "Clean all"
+                    13 "Clean all" \
+                    14 "Exit"
             )"
             status="$?"
         else
@@ -803,6 +852,7 @@ dialog_menu_loop() {
                     "11" "Autoinstall validate" \
                     "12" "Clean disks" \
                     "13" "Clean all" \
+                    "14" "Exit" \
                     3>&1 1>&2 2>&3
             )"
             status="$?"
@@ -824,6 +874,7 @@ dialog_menu_loop() {
             11) dialog_run "Autoinstall Validate" autoinstall_validate ;;
             12) dialog_run "Clean Disks" clean_disks ;;
             13) dialog_run "Clean All" clean_all ;;
+            14) break ;;
         esac
     done
 
